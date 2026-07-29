@@ -40,6 +40,12 @@ _MIN_AUDIO_FS = 8000
 _MAX_AUDIO_FS = 96000
 CHUNK_SIZE_SEC_RANGE = (0.5, 5.0)      # 与 vllm_asr_engine.clamp_chunk_size_sec 对齐
 
+
+def _is_decoder_prompt_overflow(exc) -> bool:
+    message = str(exc).lower()
+    return "decoder prompt" in message and "maximum model length" in message
+
+
 # 客户端可能下发、但 vllm 模式仍不支持的参数 → 软提示忽略（不报错）
 _UNSUPPORTED_KEYS = (
     "with_words", "with_punc",
@@ -143,7 +149,7 @@ class VllmStreamSession:
     """单个 WS 会话：能量端点断句 + vLLM 流式解码 → 句内 partial / 句尾 final。"""
 
     def __init__(self, sid, engine, endpointer: EnergyEndpointer, executor, infer_sem,
-                 *, language=None, max_utterance_sec=20, max_state_sec=300,
+                 *, language=None, max_utterance_sec=20, max_state_sec=120,
                  priority_gate=None, speaker=None, speaker_service=None,
                  speaker_executor=None):
         self.sid = sid
@@ -166,12 +172,10 @@ class VllmStreamSession:
         self.seg_id = 0
         self._seg_start_ms = None
         self._total_ms = 0                     # 会话累计音频时长（ms）
-        self._utt_samples = 0                  # 当前前端分段已喂样本数
+        self._utt_samples = 0                  # 当前硬分段已喂样本数
         self._state_samples = 0                # 当前 SDK state 已喂样本数
-        self._committed_text = ""              # 当前 SDK state 内已输出为 final 的全文前缀
-        self._pending_ui_final = None          # 已到 UI 分段阈值，待 SDK finish/后续语音确认后提交
         self._last_partial = ""
-        self._segment_audio = None             # 当前 UI 分段 PCM（仅 diarize 开启时）
+        self._segment_audio = None             # 当前硬分段 PCM（仅 diarize 开启时）
         self._spk_cluster = None               # configure() 时创建，会话级不回溯聚类
         self._spk_name_cache = {}              # label -> {name,count,ver}
         self._generation = 0                   # configure/close 后使在途说话人结果失效
@@ -259,8 +263,6 @@ class VllmStreamSession:
         self._total_ms = 0
         self._utt_samples = 0
         self._state_samples = 0
-        self._committed_text = ""
-        self._pending_ui_final = None
         self._last_partial = ""
         self._segment_audio = None
         if self._speaker is not None and self._with_diarize:
@@ -275,7 +277,7 @@ class VllmStreamSession:
         warnings = self._collect_ignored_params(cfg_msg)
         logger.info(f"[vllm-stream] 会话配置 sid={self.sid[:8]} audio_fs={self.audio_fs} "
                     f"language={self.language} chunk={self._chunk_size_sec or '默认'} "
-                    f"ui_cut={self._max_utt_samples / _TARGET_SR:.0f}s "
+                    f"hard_cut={self._max_utt_samples / _TARGET_SR:.0f}s "
                     f"state_cut={self._max_state_samples / _TARGET_SR:.0f}s "
                     f"speaker={'开' if self._spk_cluster is not None else '关'} "
                     f"identify={'开' if self._identify and self._speaker_service is not None else '关'} "
@@ -309,17 +311,7 @@ class VllmStreamSession:
         if self.state is None:
             self.state = await self._in_thread(self._engine.new_state, self.language, self._chunk_size_sec)
             self._state_samples = 0
-            self._committed_text = ""
         self._begin_ui_segment(start_ms)
-
-    def _segment_text(self, full_text: str) -> str:
-        text = full_text or ""
-        if not self._committed_text:
-            return text
-        if text.startswith(self._committed_text):
-            return text[len(self._committed_text):]
-        # SDK 可能回改已提交前缀；旧 final 无法补丁更新，这里按长度截断避免重复刷屏。
-        return text[min(len(self._committed_text), len(text)):]
 
     def _clear_ui_segment(self):
         self._seg_start_ms = None
@@ -327,10 +319,14 @@ class VllmStreamSession:
         self._last_partial = ""
         self._segment_audio = None
 
+    def _clear_state(self, *, discard_segment=False):
+        self.state = None
+        self._state_samples = 0
+        if discard_segment:
+            self._clear_ui_segment()
+
     def _make_ui_final(self, full_text, start_ms, end_ms):
-        text = self._segment_text(full_text)
-        self._committed_text = full_text or self._committed_text
-        msg = {"type": "final", "seg_id": self.seg_id, "text": text,
+        msg = {"type": "final", "seg_id": self.seg_id, "text": full_text or "",
                "start": int(start_ms or 0), "end": int(end_ms)}
         self.seg_id += 1
         self._last_partial = ""
@@ -342,28 +338,6 @@ class VllmStreamSession:
         msg = self._make_ui_final(full_text, self._seg_start_ms, end_ms)
         self._clear_ui_segment()
         return msg, audio, generation
-
-    def _stage_ui_final(self, full_text, end_ms):
-        self._pending_ui_final = {
-            "full_text": full_text or "",
-            "start": self._seg_start_ms,
-            "end": end_ms,
-            "audio": self._segment_audio,
-            "generation": self._generation,
-        }
-        self._clear_ui_segment()
-
-    def _pop_pending_ui_final(self, full_text=None, end_ms=None):
-        if self._pending_ui_final is None:
-            return None
-        pending = self._pending_ui_final
-        self._pending_ui_final = None
-        msg = self._make_ui_final(
-            pending["full_text"] if full_text is None else full_text,
-            pending["start"],
-            pending["end"] if end_ms is None else end_ms,
-        )
-        return msg, pending["audio"], pending["generation"]
 
     async def _embed_segment(self, audio):
         if audio is None or self._speaker is None:
@@ -439,35 +413,46 @@ class VllmStreamSession:
                 msg["speaker_name"] = name
         return msg
 
-    async def _emit_pending_ui_final(self, full_text=None, end_ms=None):
-        final = self._pop_pending_ui_final(full_text, end_ms)
-        if final is None:
-            return None
-        msg, audio, generation = final
-        embedded = await self._embed_segment(audio)
-        return await self._annotate_final(msg, embedded, generation)
+    def _overflow_result(self, state, exc):
+        logger.warning(
+            f"[vllm-stream] SDK state 上下文超限，使用最后有效结果收尾 "
+            f"sid={self.sid[:8]} state={self._state_samples / _TARGET_SR:.1f}s: {exc}")
+        return getattr(state, "text", ""), getattr(state, "language", None)
 
-    async def _finish_segment(self, end_ms):
+    async def _finish_state(self, state):
+        try:
+            return await self._infer(self._engine.finish, state)
+        except Exception as exc:
+            if not _is_decoder_prompt_overflow(exc):
+                raise
+            return self._overflow_result(state, exc)
+
+    async def _finish_segment(self, end_ms, *, overflow=None):
         generation = self._generation
-        pending = self._pending_ui_final
-        audio = pending["audio"] if pending is not None else self._segment_audio
-        finish_result, embedded = await asyncio.gather(
-            self._infer(self._engine.finish, self.state),
-            self._embed_segment(audio),
-        )
+        audio = self._segment_audio
+        state = self.state
+        try:
+            if overflow is None:
+                finish_result, embedded = await asyncio.gather(
+                    self._finish_state(state),
+                    self._embed_segment(audio),
+                )
+            else:
+                finish_result = self._overflow_result(state, overflow)
+                embedded = await self._embed_segment(audio)
+        except Exception:
+            if generation == self._generation:
+                self._clear_state(discard_segment=True)
+            raise
         if generation != self._generation:
             return None
         text, _ = finish_result
-        if self._pending_ui_final is not None:
-            final = self._pop_pending_ui_final(text, end_ms)
-        elif self._seg_start_ms is None:
+        if self._seg_start_ms is None:
             logger.info(f"[vllm-stream] 关闭 SDK state，无前端分段输出 sid={self.sid[:8]} end={end_ms}ms")
             final = None
         else:
             final = self._emit_ui_final(text, end_ms)
-        self.state = None
-        self._state_samples = 0
-        self._committed_text = ""
+        self._clear_state()
         if final is None:
             return None
         msg, _, final_generation = final
@@ -481,10 +466,9 @@ class VllmStreamSession:
         if self._segment_audio is not None:
             self._segment_audio.append(arr, active=active)
         self._utt_samples += arr.size
-        seg_text = self._segment_text(text)
-        if seg_text and seg_text != self._last_partial:
-            self._last_partial = seg_text
-            return {"type": "partial", "seg_id": self.seg_id, "text": seg_text}
+        if text and text != self._last_partial:
+            self._last_partial = text
+            return {"type": "partial", "seg_id": self.seg_id, "text": text}
         return None
 
     def _next_piece_samples(self, remaining_samples):
@@ -512,8 +496,8 @@ class VllmStreamSession:
             logger.info(f"[vllm-stream] SDK state 到期重建 sid={self.sid[:8]} end={end_ms}ms")
             return await self._finish_segment(end_ms)
         if self._seg_start_ms is not None and self._utt_samples >= self._max_utt_samples:
-            logger.info(f"[vllm-stream] 超长句兜底分段 sid={self.sid[:8]} end={end_ms}ms")
-            self._stage_ui_final(getattr(self.state, "text", ""), end_ms)
+            logger.info(f"[vllm-stream] 连续语音硬分段 sid={self.sid[:8]} end={end_ms}ms")
+            return await self._finish_segment(end_ms)
         return None
 
     async def feed_audio(self, pcm_bytes):
@@ -533,20 +517,43 @@ class VllmStreamSession:
 
             start_events = [e for e in events if e["type"] == "start"]
             if start_events:
-                pending = await self._emit_pending_ui_final()
-                if pending is not None:
-                    yield pending
                 await self._ensure_active_state(start_events[0]["start"])
             elif active and self._seg_start_ms is None:
-                pending = await self._emit_pending_ui_final()
-                if pending is not None:
-                    yield pending
                 await self._ensure_active_state(self._total_ms)
 
             if self.state is not None:
-                partial = await self._feed_piece(piece, active=active)
-                if partial is not None:
-                    yield partial
+                generation = self._generation
+                try:
+                    partial = await self._feed_piece(piece, active=active)
+                except Exception as exc:
+                    if generation != self._generation:
+                        return
+                    if not _is_decoder_prompt_overflow(exc):
+                        self._clear_state(discard_segment=True)
+                        raise
+                    final = await self._finish_segment(
+                        self._total_ms, overflow=exc)
+                    if final is not None:
+                        yield final
+                    # 丢弃已污染的旧 state，把当前块在全新 state 中只重放一次。
+                    if active and generation == self._generation:
+                        await self._ensure_active_state(self._total_ms)
+                        try:
+                            partial = await self._feed_piece(
+                                piece, active=True)
+                        except Exception as retry_exc:
+                            self._clear_state(discard_segment=True)
+                            if not _is_decoder_prompt_overflow(retry_exc):
+                                raise
+                            logger.error(
+                                f"[vllm-stream] 全新 SDK state 仍上下文超限，"
+                                f"丢弃当前音频块 sid={self.sid[:8]}: {retry_exc}")
+                        else:
+                            if partial is not None:
+                                yield partial
+                else:
+                    if partial is not None:
+                        yield partial
 
             self._total_ms += dur_ms
             offset += piece.size
@@ -571,9 +578,7 @@ class VllmStreamSession:
     def close(self):
         """释放会话域状态，并使尚未返回的说话人任务失效。"""
         self._generation += 1
-        self.state = None
-        self._pending_ui_final = None
-        self._segment_audio = None
+        self._clear_state(discard_segment=True)
         self._spk_cluster = None
         self._spk_name_cache = {}
 
@@ -588,7 +593,7 @@ class VllmStreamBackend:
     backend = "vllm-native"
 
     def __init__(self, engine, *, max_sessions=16, concurrency=1, max_utterance_sec=20,
-                 max_state_sec=300, energy_floor_dbfs=-45.0, end_silence_ms=800,
+                 max_state_sec=120, energy_floor_dbfs=-45.0, end_silence_ms=800,
                  priority_gate=None, speaker=None, speaker_service=None):
         self._engine = engine
         self._speaker = speaker

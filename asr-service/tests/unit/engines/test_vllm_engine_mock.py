@@ -39,6 +39,31 @@ class _MockModel:
         return state
 
 
+class _SamplingMockModel(_MockModel):
+    def __init__(self):
+        super().__init__()
+        self.sampling_params = SimpleNamespace(max_tokens=4096)
+        self.seen_max_tokens = []
+
+    def streaming_transcribe(self, pcm, state):
+        self.seen_max_tokens.append(self.sampling_params.max_tokens)
+        return super().streaming_transcribe(pcm, state)
+
+    def finish_streaming_transcribe(self, state):
+        self.seen_max_tokens.append(self.sampling_params.max_tokens)
+        return super().finish_streaming_transcribe(state)
+
+    def transcribe(self, **kwargs):
+        self.seen_max_tokens.append(self.sampling_params.max_tokens)
+        return []
+
+
+class _FailingSamplingMockModel(_SamplingMockModel):
+    def streaming_transcribe(self, pcm, state):
+        self.seen_max_tokens.append(self.sampling_params.max_tokens)
+        raise ValueError("decode failed")
+
+
 def _engine_with_model(**kw):
     eng = VLLMASREngine(**kw)
     eng._model = _MockModel()
@@ -71,6 +96,39 @@ def test_feed_and_finish_sequence():
     assert (t1, t2, tf) == ("x", "xx", "xx。")
     assert lang == "Chinese"
     assert [c[0] for c in eng._model.calls] == ["init", "feed", "feed", "finish"]
+
+
+def test_streaming_uses_bounded_tokens_without_affecting_offline():
+    eng = VLLMASREngine(stream_max_new_tokens=256)
+    eng._model = _SamplingMockModel()
+    eng._stream_sampling_params = SimpleNamespace(max_tokens=256)
+    original_params = eng._model.sampling_params
+    state = eng.new_state()
+
+    eng.feed(np.zeros(1600, np.float32), state)
+    eng.finish(state)
+    eng.transcribe(np.zeros(1600, np.float32))
+
+    assert eng._model.seen_max_tokens == [256, 256, 4096]
+    assert eng._model.sampling_params is original_params
+
+
+def test_streaming_restores_sampling_params_after_failure():
+    eng = VLLMASREngine(stream_max_new_tokens=256)
+    eng._model = _FailingSamplingMockModel()
+    eng._stream_sampling_params = SimpleNamespace(max_tokens=256)
+    original_params = eng._model.sampling_params
+    state = eng.new_state()
+
+    try:
+        eng.feed(np.zeros(1600, np.float32), state)
+    except ValueError as exc:
+        assert str(exc) == "decode failed"
+    else:
+        raise AssertionError("expected decode failure")
+
+    assert eng._model.seen_max_tokens == [256]
+    assert eng._model.sampling_params is original_params
 
 
 def test_is_loaded():

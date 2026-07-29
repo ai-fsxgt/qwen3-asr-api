@@ -68,6 +68,7 @@ LEGACY_DEFAULTS = {
     # ── vLLM（路线 A 原生流式）新增，非重构前遗留 ──
     "gpu_memory_utilization": None,
     "vllm_max_model_len": None,
+    "vllm_stream_max_new_tokens": None,
     "vllm_chunk_size_sec": None,
     "vllm_max_utterance_sec": None,
     "vllm_max_state_sec": None,
@@ -161,6 +162,13 @@ def test_invalid_choice_rejected():
 def test_stream_max_session_seconds_rejects_non_positive_cli(value):
     with pytest.raises(SystemExit):
         build_parser().parse_args(["--stream-max-session-seconds", value])
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_vllm_stream_max_new_tokens_rejects_non_positive_cli(value):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([
+            "--vllm-stream-max-new-tokens", value])
 
 
 def test_keys_and_dests_unique():

@@ -148,9 +148,10 @@ Effective only in vllm mode; requires a CUDA GPU and an isolated environment/ima
 |------|------|--------|------|
 | `--gpu-memory-utilization` | 0–1 | `0.6` | vLLM GPU memory utilization (×total VRAM as budget; single-stream ASR needs no 0.8) |
 | `--vllm-max-model-len` | number | `32768` | Max context length; too large raises the KV cache floor and prevents low-utilization startup |
+| `--vllm-stream-max-new-tokens` | positive integer | `256` | Maximum new tokens per streaming decode; bounds context growth from repeated text without affecting offline ASR |
 | `--vllm-chunk-size-sec` | float | `1.0` | Streaming decode chunk size (sec); smaller = finer partials (range 0.5–5) |
-| `--vllm-max-utterance-sec` | number | `20` | UI fallback segment cut (sec); affects output card granularity only |
-| `--vllm-max-state-sec` | number | `300` | SDK streaming state lifetime limit (sec); rebuilds state to bound context growth |
+| `--vllm-max-utterance-sec` | number | `20` | Hard continuous-speech cut (sec); emits final and rebuilds the SDK state |
+| `--vllm-max-state-sec` | number | `120` | SDK streaming state lifetime limit (sec); rebuilds state to bound context growth |
 | `--vllm-concurrency` | number | `1` | Concurrent decoding sessions (generate is serial; >1 yields no throughput) |
 | `--vllm-end-silence-ms` | ms | `800` | Energy endpointer end-silence threshold |
 | `--vllm-enable-align` / `--no-vllm-align` | - | on | Offline `/v2/asr` word timestamps: load the aligner (off saves VRAM, no words) |

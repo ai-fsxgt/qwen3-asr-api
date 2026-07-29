@@ -187,6 +187,8 @@ def _apply_cli_config(args):
         cfg.VLLM_GPU_MEMORY_UTILIZATION = args.gpu_memory_utilization
     if getattr(args, "vllm_max_model_len", None) is not None:
         cfg.VLLM_MAX_MODEL_LEN = args.vllm_max_model_len
+    if getattr(args, "vllm_stream_max_new_tokens", None) is not None:
+        cfg.VLLM_STREAM_MAX_NEW_TOKENS = args.vllm_stream_max_new_tokens
     if getattr(args, "vllm_chunk_size_sec", None) is not None:
         cfg.VLLM_CHUNK_SIZE_SEC = args.vllm_chunk_size_sec
     if getattr(args, "vllm_max_utterance_sec", None) is not None:
@@ -686,6 +688,7 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         model_size=model_size,
         gpu_memory_utilization=cfg.VLLM_GPU_MEMORY_UTILIZATION,
         max_model_len=cfg.VLLM_MAX_MODEL_LEN,
+        stream_max_new_tokens=cfg.VLLM_STREAM_MAX_NEW_TOKENS,
         chunk_size_sec=cfg.VLLM_CHUNK_SIZE_SEC,
         unfixed_chunk_num=cfg.VLLM_UNFIXED_CHUNK_NUM,
         unfixed_token_num=cfg.VLLM_UNFIXED_TOKEN_NUM,
