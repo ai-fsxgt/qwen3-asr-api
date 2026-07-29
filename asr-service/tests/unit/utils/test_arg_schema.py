@@ -164,6 +164,13 @@ def test_stream_max_session_seconds_rejects_non_positive_cli(value):
         build_parser().parse_args(["--stream-max-session-seconds", value])
 
 
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_vllm_stream_max_new_tokens_rejects_non_positive_cli(value):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([
+            "--vllm-stream-max-new-tokens", value])
+
+
 def test_keys_and_dests_unique():
     keys = [s.key for s in ARG_SPECS]
     dests = [s.attr for s in ARG_SPECS]

@@ -42,7 +42,7 @@ enable_stream: true         # WS /v2/asr/stream（standard 模式）
 # ── vLLM 原生流式（serve_mode: vllm 时生效；GPU 专用，与 standard 实时互斥）──
 # gpu_memory_utilization: 0.6   # 显存占用率（×总显存为预算，实占略低）；单流 ASR 无需 0.8，调低省显存
 # vllm_max_model_len: 32768     # 单序列上下文上限；ASR 单句远小于此，过大(模型默认65536)会抬高 KV 下限、致低占用率起不来
-# vllm_stream_max_new_tokens: 256 # 单次流式解码最大新增 token；抑制重复文本导致 prefix 失控（不影响离线）
+# vllm_stream_max_new_tokens: 256 # 正整数；单次流式解码最大新增 token，抑制重复文本导致 prefix 失控（不影响离线）
 # vllm_chunk_size_sec: 1.0      # 流式解码块大小（秒）：越小 partial 越细腻
 # vllm_max_utterance_sec: 20    # 连续语音硬分段（秒）：输出 final 并重建 SDK state
 # vllm_max_state_sec: 120       # SDK 流式状态生命周期上限（秒）：到期重建，约束上下文增长

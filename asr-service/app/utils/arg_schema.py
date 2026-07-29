@@ -266,10 +266,11 @@ ARG_SPECS = (
     ),
     ArgSpec(
         key="vllm_stream_max_new_tokens", flags=("--vllm-stream-max-new-tokens",),
-        default=None, type=int, group="vLLM",
-        help=f"单次流式解码最大新增 token，限制重复文本导致的上下文膨胀 "
+        default=None, type=int, min_value=1, group="vLLM",
+        help=f"单次流式解码最大新增 token（正整数），限制重复文本导致的上下文膨胀 "
              f"(default: {cfg.VLLM_STREAM_MAX_NEW_TOKENS})",
-        help_en=f"Maximum new tokens per streaming decode; bounds context growth from repeated text "
+        help_en=f"Maximum new tokens per streaming decode (positive integer); "
+                f"bounds context growth from repeated text "
                 f"(default: {cfg.VLLM_STREAM_MAX_NEW_TOKENS})",
     ),
     ArgSpec(

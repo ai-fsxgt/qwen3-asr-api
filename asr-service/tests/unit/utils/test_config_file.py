@@ -150,6 +150,15 @@ def test_stream_max_session_seconds_rejects_non_positive_config(service_root, va
         cf.validate_config({"stream_max_session_seconds": value})
 
 
+@pytest.mark.parametrize("value", [0, -1])
+def test_vllm_stream_max_new_tokens_rejects_non_positive_config(
+        service_root, value):
+    with pytest.raises(
+            SystemExit,
+            match="vllm_stream_max_new_tokens: 期望 >= 1"):
+        cf.validate_config({"vllm_stream_max_new_tokens": value})
+
+
 def test_duplicate_key_exits(service_root):
     """YAML 规范默认重复键末值静默胜出——本服务按坏文件硬报错处理。"""
     p = _write(service_root, "device: cpu\nport: 9000\ndevice: cuda\n")

@@ -80,7 +80,7 @@
 |---|---|---|
 | `gpu_memory_utilization` / `--gpu-memory-utilization` | `0.6` | vLLM GPU memory utilization (single-stream ASR needs no 0.8) |
 | `vllm_max_model_len` / `--vllm-max-model-len` | `32768` | Max context length per sequence |
-| `vllm_stream_max_new_tokens` / `--vllm-stream-max-new-tokens` | `256` | Maximum new tokens per streaming decode; bounds repeated-text growth without affecting offline ASR |
+| `vllm_stream_max_new_tokens` / `--vllm-stream-max-new-tokens` | `256` | Positive integer; maximum new tokens per streaming decode, bounding repeated-text growth without affecting offline ASR |
 | `vllm_chunk_size_sec` / `--vllm-chunk-size-sec` | `1.0` | Streaming decode chunk size (smaller = finer partials) |
 | `vllm_max_utterance_sec` / `--vllm-max-utterance-sec` | `20` | Hard continuous-speech cut (sec); emits final and rebuilds the SDK state |
 | `vllm_max_state_sec` / `--vllm-max-state-sec` | `120` | SDK streaming state lifetime limit (sec); rebuilds state to bound context growth |

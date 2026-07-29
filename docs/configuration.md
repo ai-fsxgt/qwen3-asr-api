@@ -148,7 +148,7 @@ volumes:
 |------|------|--------|------|
 | `--gpu-memory-utilization` | 0–1 | `0.6` | vLLM 显存占用率（×总显存为预算；单流 ASR 无需 0.8） |
 | `--vllm-max-model-len` | 数字 | `32768` | 最大上下文长度；过大会抬高 KV cache 下限，致低占用率起不来 |
-| `--vllm-stream-max-new-tokens` | 数字 | `256` | 单次流式解码最大新增 token；限制重复文本造成的上下文膨胀，不影响离线识别 |
+| `--vllm-stream-max-new-tokens` | 正整数 | `256` | 单次流式解码最大新增 token；限制重复文本造成的上下文膨胀，不影响离线识别 |
 | `--vllm-chunk-size-sec` | 浮点 | `1.0` | 流式解码块大小（秒），越小 partial 越细腻（范围 0.5–5） |
 | `--vllm-max-utterance-sec` | 数字 | `20` | 连续语音硬分段（秒）；输出 final 并重建 SDK state |
 | `--vllm-max-state-sec` | 数字 | `120` | SDK 流式状态生命周期上限（秒），到期重建以约束上下文增长 |
