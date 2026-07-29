@@ -265,6 +265,14 @@ ARG_SPECS = (
         help_en=f"vLLM max context length; lower to save KV cache memory (default: {cfg.VLLM_MAX_MODEL_LEN})",
     ),
     ArgSpec(
+        key="vllm_stream_max_new_tokens", flags=("--vllm-stream-max-new-tokens",),
+        default=None, type=int, group="vLLM",
+        help=f"单次流式解码最大新增 token，限制重复文本导致的上下文膨胀 "
+             f"(default: {cfg.VLLM_STREAM_MAX_NEW_TOKENS})",
+        help_en=f"Maximum new tokens per streaming decode; bounds context growth from repeated text "
+                f"(default: {cfg.VLLM_STREAM_MAX_NEW_TOKENS})",
+    ),
+    ArgSpec(
         key="vllm_chunk_size_sec", flags=("--vllm-chunk-size-sec",),
         default=None, type=float, group="vLLM",
         help=f"流式解码块大小（秒），越小 partial 越细腻 (default: {cfg.VLLM_CHUNK_SIZE_SEC})",
@@ -274,8 +282,9 @@ ARG_SPECS = (
     ArgSpec(
         key="vllm_max_utterance_sec", flags=("--vllm-max-utterance-sec",),
         default=None, type=int, group="vLLM",
-        help=f"前端长句兜底分段（秒），只影响输出卡片粒度 (default: {cfg.VLLM_MAX_UTTERANCE_SEC})",
-        help_en=f"UI fallback segment cut (sec); affects output card granularity only "
+        help=f"连续语音硬分段（秒），输出 final 并重建 SDK state "
+             f"(default: {cfg.VLLM_MAX_UTTERANCE_SEC})",
+        help_en=f"Hard continuous-speech cut (sec); emits final and rebuilds the SDK state "
                 f"(default: {cfg.VLLM_MAX_UTTERANCE_SEC})",
     ),
     ArgSpec(

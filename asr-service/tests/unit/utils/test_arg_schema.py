@@ -68,6 +68,7 @@ LEGACY_DEFAULTS = {
     # ── vLLM（路线 A 原生流式）新增，非重构前遗留 ──
     "gpu_memory_utilization": None,
     "vllm_max_model_len": None,
+    "vllm_stream_max_new_tokens": None,
     "vllm_chunk_size_sec": None,
     "vllm_max_utterance_sec": None,
     "vllm_max_state_sec": None,

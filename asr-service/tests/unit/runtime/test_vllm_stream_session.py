@@ -104,6 +104,35 @@ class _SilenceAwareMockEngine(_MockEngine):
         return state.text, state.language
 
 
+class _ContextOverflowMockEngine(_MockEngine):
+    def finish(self, state):
+        self.finishes += 1
+        raise ValueError(
+            "The decoder prompt (length 35236) is longer than the "
+            "maximum model length of 32768.")
+
+
+class _FeedContextOverflowMockEngine(_MockEngine):
+    def __init__(self):
+        super().__init__()
+        self.failed = False
+
+    def feed(self, arr, state):
+        if self.feeds == 1 and not self.failed:
+            self.feeds += 1
+            self.failed = True
+            raise ValueError(
+                "The decoder prompt (length 35236) is longer than the "
+                "maximum model length of 32768.")
+        return super().feed(arr, state)
+
+
+class _FinishFailureMockEngine(_MockEngine):
+    def finish(self, state):
+        self.finishes += 1
+        raise ValueError("unexpected finish failure")
+
+
 class _FakeSpeakerEngine:
     """按调用顺序返回正交 embedding，并记录实际收到的 PCM。"""
 
@@ -381,14 +410,14 @@ def test_flush_emits_final_for_open_segment():
     assert sess.state is None
 
 
-def test_utterance_cut_keeps_sdk_state_and_starts_next_ui_segment():
+def test_utterance_cut_finishes_and_restarts_sdk_state():
     eng = _MockEngine()
     _, sess = _make_session(eng, max_utterance_sec=1, max_state_sec=300)
     sess.configure({"audio_fs": 16000})
 
     async def run():
         msgs = []
-        for _ in range(6):                        # 1.2s 连续语音；1.0s 触发 UI 分段
+        for _ in range(6):                        # 1.2s 连续语音；1.0s 触发 SDK state 重置
             msgs += await _collect(sess.feed_audio(_voice()))
         return msgs
 
@@ -398,12 +427,12 @@ def test_utterance_cut_keeps_sdk_state_and_starts_next_ui_segment():
 
     assert len(finals) == 1
     assert finals[0]["seg_id"] == 0
-    assert finals[0]["text"] == "字字字字字"
+    assert finals[0]["text"] == "字字字字字。"
     assert partials[-1]["seg_id"] == 1
     assert partials[-1]["text"] == "字"
     assert sess.state is not None
-    assert eng.new_states == 1                    # 20s/UI 分段不重建 SDK state
-    assert eng.finishes == 0                      # 未到自然句尾/stop/state 上限，不 finish
+    assert eng.new_states == 2
+    assert eng.finishes == 1
 
 
 def test_state_cut_finishes_and_restarts_sdk_state_before_more_audio():
@@ -426,6 +455,72 @@ def test_state_cut_finishes_and_restarts_sdk_state_before_more_audio():
     assert partials[-1]["seg_id"] == 1
     assert partials[-1]["text"] == "字"
     assert sess.state is not None
+    assert eng.new_states == 2
+    assert eng.finishes == 1
+
+
+def test_state_cut_recovers_from_decoder_prompt_overflow():
+    eng = _ContextOverflowMockEngine()
+    _, sess = _make_session(eng, max_utterance_sec=10, max_state_sec=1)
+    sess.configure({"audio_fs": 16000})
+
+    async def run():
+        msgs = []
+        for _ in range(6):
+            msgs += await _collect(sess.feed_audio(_voice()))
+        return msgs
+
+    msgs = asyncio.run(run())
+    finals = [m for m in msgs if m["type"] == "final"]
+    partials = [m for m in msgs if m["type"] == "partial"]
+
+    assert len(finals) == 1
+    assert finals[0]["text"] == "字字字字字"
+    assert partials[-1]["seg_id"] == 1
+    assert partials[-1]["text"] == "字"
+    assert sess.state is not None
+    assert eng.new_states == 2
+    assert eng.finishes == 1
+
+
+def test_feed_recovers_from_decoder_prompt_overflow():
+    eng = _FeedContextOverflowMockEngine()
+    _, sess = _make_session(eng, max_utterance_sec=10, max_state_sec=300)
+    sess.configure({"audio_fs": 16000})
+
+    async def run():
+        msgs = []
+        for _ in range(3):
+            msgs += await _collect(sess.feed_audio(_voice()))
+        return msgs
+
+    msgs = asyncio.run(run())
+    finals = [m for m in msgs if m["type"] == "final"]
+    partials = [m for m in msgs if m["type"] == "partial"]
+
+    assert len(finals) == 1
+    assert finals[0]["text"] == "字"
+    assert partials[-1]["seg_id"] == 1
+    assert partials[-1]["text"] == "字字"
+    assert sess.state is not None
+    assert eng.new_states == 2
+    assert eng.finishes == 0
+
+
+def test_unexpected_finish_failure_resets_state_and_propagates():
+    eng = _FinishFailureMockEngine()
+    _, sess = _make_session(eng, max_utterance_sec=10, max_state_sec=1)
+    sess.configure({"audio_fs": 16000})
+
+    async def run():
+        with pytest.raises(ValueError, match="unexpected finish failure"):
+            await _collect(sess.feed_audio(_voice(ms=1000)))
+        assert sess.state is None
+        assert sess._seg_start_ms is None
+        return await _collect(sess.feed_audio(_voice()))
+
+    msgs = asyncio.run(run())
+    assert msgs[-1]["type"] == "partial"
     assert eng.new_states == 2
     assert eng.finishes == 1
 
@@ -459,7 +554,7 @@ def test_flush_after_exact_state_cut_does_not_emit_empty_segment():
     assert finals[0]["text"]
 
 
-def test_flush_after_utterance_cut_uses_finish_text():
+def test_exact_utterance_cut_finishes_immediately():
     eng = _MockEngine()
     _, sess = _make_session(eng, max_utterance_sec=1, max_state_sec=300)
     sess.configure({"audio_fs": 16000})
@@ -467,7 +562,7 @@ def test_flush_after_utterance_cut_uses_finish_text():
     async def run():
         msgs = []
         cut_msgs = await _collect(sess.feed_audio(_voice(ms=1000)))
-        assert [m for m in cut_msgs if m["type"] == "final"] == []
+        assert len([m for m in cut_msgs if m["type"] == "final"]) == 1
         msgs += cut_msgs
         msgs += await _collect(sess.flush())
         return msgs
@@ -491,7 +586,7 @@ def test_utterance_cut_then_trailing_silence_does_not_emit_empty_segment():
     async def run():
         msgs = []
         cut_msgs = await _collect(sess.feed_audio(_voice(ms=1000)))
-        assert [m for m in cut_msgs if m["type"] == "final"] == []
+        assert len([m for m in cut_msgs if m["type"] == "final"]) == 1
         msgs += cut_msgs
         for _ in range(4):
             msgs += await _collect(sess.feed_audio(_silence()))   # 仅尾静音，不应新建 UI 段
@@ -624,7 +719,7 @@ def test_speaker_audio_trims_endpoint_tail_silence():
         backend.shutdown()
 
 
-def test_pending_ui_final_keeps_exact_audio_snapshot():
+def test_hard_cut_keeps_exact_audio_snapshot():
     speaker = _FakeSpeakerEngine()
     backend, sess = _make_session(
         _SilenceAwareMockEngine(),
@@ -637,7 +732,7 @@ def test_pending_ui_final_keeps_exact_audio_snapshot():
 
     async def run():
         messages = await _collect(sess.feed_audio(_voice(1000)))
-        assert not [msg for msg in messages if msg["type"] == "final"]
+        assert len([msg for msg in messages if msg["type"] == "final"]) == 1
         messages += await _collect(sess.feed_audio(_voice(200)))
         messages += await _collect(sess.flush())
         return [msg for msg in messages if msg["type"] == "final"]
@@ -783,7 +878,7 @@ def test_release_invalidates_inflight_speaker_result():
     try:
         assert asyncio.run(run()) == []
         assert sess._spk_cluster is None
-        assert sess._pending_ui_final is None
+        assert sess.state is None
     finally:
         proceed.set()
         backend.shutdown()

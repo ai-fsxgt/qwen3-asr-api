@@ -10,6 +10,7 @@ standard / CPU 模式不导入本模块，故不依赖 vLLM。
     finish_streaming_transcribe(state)         # 冲刷尾音
 底层为同步 vllm.LLM、单流、无 batch、无时间戳；generate 非并发安全 → _infer_lock 串行化。
 """
+import copy
 import logging
 import threading
 
@@ -33,12 +34,14 @@ class VLLMASREngine:
     """Qwen3-ASR vLLM 引擎封装。一个进程内一份模型，会话间共享，generate 串行。"""
 
     def __init__(self, model_size="0.6b", *, gpu_memory_utilization=0.8,
-                 max_model_len=None, chunk_size_sec=1.0,
+                 max_model_len=None, stream_max_new_tokens=256, chunk_size_sec=1.0,
                  unfixed_chunk_num=2, unfixed_token_num=5, enable_align=True,
                  align_device="cuda", infer_batch_size=4):
         self._model_size = model_size
         self._gpu_mem = gpu_memory_utilization
         self._max_model_len = max_model_len
+        self._stream_max_new_tokens = max(1, int(stream_max_new_tokens))
+        self._stream_sampling_params = None
         self._chunk_size_sec = clamp_chunk_size_sec(chunk_size_sec)
         self._unfixed_chunk_num = unfixed_chunk_num
         self._unfixed_token_num = unfixed_token_num
@@ -97,8 +100,11 @@ class VLLMASREngine:
                 self._enable_align = False
 
         self._model = Qwen3ASRModel.LLM(model=local_dir, **llm_kwargs)
+        self._stream_sampling_params = copy.copy(self._model.sampling_params)
+        self._stream_sampling_params.max_tokens = self._stream_max_new_tokens
         logger.info(f"vLLM ASR 引擎已加载: size={self._model_size} "
                     f"gpu_mem={self._gpu_mem} max_model_len={self._max_model_len or '默认'} "
+                    f"stream_max_tokens={self._stream_max_new_tokens} "
                     f"chunk={self._chunk_size_sec}s align={self._enable_align}"
                     f"{f'@{self._align_device}' if self._enable_align else ''} "
                     f"infer_batch={self._infer_batch_size}")
@@ -112,16 +118,25 @@ class VLLMASREngine:
             unfixed_chunk_num=self._unfixed_chunk_num,
             unfixed_token_num=self._unfixed_token_num)
 
+    def _run_streaming(self, fn, *args):
+        with self._infer_lock:
+            if self._stream_sampling_params is None:
+                return fn(*args)
+            sampling_params = self._model.sampling_params
+            self._model.sampling_params = self._stream_sampling_params
+            try:
+                return fn(*args)
+            finally:
+                self._model.sampling_params = sampling_params
+
     def feed(self, pcm16k: np.ndarray, state):
         """喂一块 16k PCM（float32 或 int16，内部自转），返回 (text, language)；state 原地更新。"""
-        with self._infer_lock:
-            self._model.streaming_transcribe(pcm16k, state)
+        self._run_streaming(self._model.streaming_transcribe, pcm16k, state)
         return state.text, state.language
 
     def finish(self, state):
         """冲刷尾音并收尾，返回 (text, language)。"""
-        with self._infer_lock:
-            self._model.finish_streaming_transcribe(state)
+        self._run_streaming(self._model.finish_streaming_transcribe, state)
         return state.text, state.language
 
     # ── 离线一次性转写（同步；与流式共用同一 vllm.LLM 与 _infer_lock，故串行）──

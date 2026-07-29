@@ -183,12 +183,13 @@ SPEAKER_STORE_AUDIO = False         # 留存登记样本音频（扩大合规面
 
 VLLM_GPU_MEMORY_UTILIZATION = 0.6   # 显存占用率（×总显存为预算；实占略低）：单流 ASR 无需 0.8 的大 KV 池
 VLLM_MAX_MODEL_LEN = 32768          # 单序列上下文上限：ASR 单句远小于此；过大(默认65536)会抬高 KV 下限致低占用率起不来
+VLLM_STREAM_MAX_NEW_TOKENS = 256    # 单次流式解码最大新增 token：抑制重复文本导致 prefix 失控
 VLLM_CHUNK_SIZE_SEC = 1.0           # 流式解码块大小（秒）：越小 partial 越细腻（V0 实测定档）
 VLLM_UNFIXED_CHUNK_NUM = 2          # 前 N 块不拿历史当前缀（冷启动稳定）
 VLLM_UNFIXED_TOKEN_NUM = 5          # N 块后回滚末 K token 当前缀（降抖动）
 VLLM_CONCURRENCY = 1                # 同时解码会话数（generate 串行，>1 无吞吐收益）
-VLLM_MAX_UTTERANCE_SEC = 20         # 前端输出分段（秒）：长句兜底切卡片，便于回看定位
-VLLM_MAX_STATE_SEC = 300            # SDK state 生命周期上限（秒）：重建 state，约束 audio_accum/prefix 膨胀
+VLLM_MAX_UTTERANCE_SEC = 20         # 连续语音硬分段（秒）：输出 final 并重建 SDK state
+VLLM_MAX_STATE_SEC = 120            # SDK state 生命周期上限（秒）：重建 state，约束 audio_accum/prefix 膨胀
 VLLM_ENERGY_FLOOR_DBFS = -45.0      # 能量端点门限（dBFS）：高于此判为语音/句开始
 VLLM_END_SILENCE_MS = 800           # 能量端点尾静音判停（ms）
 VLLM_ENABLE_ALIGN = True            # 离线词级时间戳：加载 ForcedAligner（HF 拉取 ~0.6B；--no-vllm-align 可关省显存）
