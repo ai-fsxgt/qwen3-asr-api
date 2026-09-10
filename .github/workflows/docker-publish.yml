@@ -24,7 +24,7 @@ env:
 jobs:
   # 从 tag 派生纯版本号（v2.0.1 -> 2.0.1），供各构建 job 复用
   setup:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     outputs:
       version: ${{ steps.derive.outputs.version }}
     steps:
@@ -33,7 +33,7 @@ jobs:
 
   cpu-amd64:
     needs: setup
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
@@ -72,7 +72,7 @@ jobs:
 
   vllm:
     needs: setup
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       # vLLM 镜像（基底 vllm/vllm-openai 约 9GB 压缩）解压后很大，先清理腾出磁盘
       - name: Free disk space
@@ -119,7 +119,7 @@ jobs:
   # CPU 构建完成后统一挂 tag：amd64 单架构
   merge:
     needs: [setup, cpu-amd64]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     env:
       VERSION: ${{ needs.setup.outputs.version }}
     steps:
@@ -161,7 +161,7 @@ jobs:
   # vLLM 构建失败不影响 CPU 镜像发布
   merge-vllm:
     needs: [setup, vllm]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     env:
       VERSION: ${{ needs.setup.outputs.version }}
     steps:
