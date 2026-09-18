@@ -11,8 +11,11 @@ services:
     #     - registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm
     ports:
       - "8766:8765"                      # 独立端口，避免与 standard asr(8765) 冲突
-    # environment:
-    #   - ASR_API_KEY=sk-your-key-here    # 设置后启用 Bearer token 认证
+    environment:
+      TZ: Asia/Shanghai
+      # ASR_API_KEY: sk-your-key-here     # 设置后启用 Bearer token 认证
+    mem_limit: 10g
+    memswap_limit: 10g
     volumes:
       # config.yaml 须先存在（用根目录 manage.sh 引导，或从 config.example.yaml 拷贝）；
       # 缺失时 bind 挂载会创建空目录。也可改用 command 传 --no-config 走纯 CLI。

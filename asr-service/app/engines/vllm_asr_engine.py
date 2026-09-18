@@ -73,8 +73,13 @@ class VLLMASREngine:
         source = MODEL_SOURCE if MODEL_SOURCE in MODEL_REPO_MAP else "modelscope"
         ensure_model(MODEL_REPO_MAP[source][model_key], local_dir)
 
-        llm_kwargs = dict(gpu_memory_utilization=self._gpu_mem,
-                          max_inference_batch_size=self._infer_batch_size)
+        llm_kwargs = dict(
+            gpu_memory_utilization=self._gpu_mem,
+            max_inference_batch_size=self._infer_batch_size,
+            # ASR 音频每次都不同，vLLM 默认的多模态预处理缓存无法有效复用，
+            # 却会在主进程和 EngineCore 中各自占用最多 4GB 主机内存。
+            mm_processor_cache_gb=0,
+        )
         if self._max_model_len:
             llm_kwargs["max_model_len"] = self._max_model_len
 
@@ -104,6 +109,7 @@ class VLLMASREngine:
         self._stream_sampling_params.max_tokens = self._stream_max_new_tokens
         logger.info(f"vLLM ASR 引擎已加载: size={self._model_size} "
                     f"gpu_mem={self._gpu_mem} max_model_len={self._max_model_len or '默认'} "
+                    f"mm_processor_cache_gb=0 "
                     f"stream_max_tokens={self._stream_max_new_tokens} "
                     f"chunk={self._chunk_size_sec}s align={self._enable_align}"
                     f"{f'@{self._align_device}' if self._enable_align else ''} "
