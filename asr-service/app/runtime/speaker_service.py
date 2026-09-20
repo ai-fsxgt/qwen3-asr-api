@@ -496,6 +496,7 @@ class SpeakerService:
                     dur = float(c.get("dur_sec") or 0.0)
                     if (
                         cfg.SPEAKER_AUTO_ENROLL
+                        and dur >= cfg.SPEAKER_IDENTIFY_MIN_SEC
                         and dur >= cfg.SPEAKER_AUTO_ENROLL_MIN_SEC
                     ):
                         mapping = self._identify_or_enroll_cluster(

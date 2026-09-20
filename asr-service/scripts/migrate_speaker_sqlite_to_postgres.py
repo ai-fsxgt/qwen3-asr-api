@@ -132,6 +132,12 @@ def _validate_source(data: SourceData, source_timezone: ZoneInfo) -> None:
         if row["speaker_id"] not in speaker_ids:
             raise ValueError(f"模板 {row['id']} 引用了不存在的说话人")
         _vector(row["vector"], owner=f"template {row['id']}")
+        try:
+            duration = float(row["dur_sec"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"模板 {row['id']} 时长无效") from exc
+        if not np.isfinite(duration) or duration < 0:
+            raise ValueError(f"模板 {row['id']} 时长无效: {duration!r}")
         _timestamp(
             row["created_at"],
             source_timezone,

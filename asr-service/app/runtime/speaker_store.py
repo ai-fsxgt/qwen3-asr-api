@@ -515,7 +515,15 @@ class SpeakerStore:
                 replay = self._read_claim(conn, speaker_id, claim_key)
                 if replay is not None:
                     return replay
-                self._require_auto_speaker(conn, speaker_id)
+                try:
+                    self._require_auto_speaker(conn, speaker_id)
+                except SpeakerClaimConflictError:
+                    # 另一实例可能刚用同一 claim_key 完成认领：状态与幂等
+                    # 记录在同一事务提交，此时重读即可区分幂等回放与真实冲突。
+                    replay = self._read_claim(conn, speaker_id, claim_key)
+                    if replay is not None:
+                        return replay
+                    raise
                 return None
         except SpeakerStoreError:
             raise
@@ -780,28 +788,46 @@ class SpeakerStore:
     def get_speaker(self, speaker_id: str) -> dict | None:
         try:
             with self._connection() as conn:
-                row = conn.execute(
+                rows = conn.execute(
                     """
-                    SELECT id, name, note, source, model_tag,
-                           created_at, updated_at
-                    FROM speakers WHERE id=%s
-                    """,
-                    (speaker_id,),
-                ).fetchone()
-                if row is None:
-                    return None
-                templates = conn.execute(
-                    """
-                    SELECT id, dur_sec, created_at
-                    FROM speaker_templates
-                    WHERE speaker_id=%s ORDER BY id
+                    SELECT s.id, s.name, s.note, s.source, s.model_tag,
+                           s.created_at, s.updated_at,
+                           t.id AS template_id,
+                           t.dur_sec AS template_dur_sec,
+                           t.created_at AS template_created_at
+                    FROM speakers s
+                    LEFT JOIN speaker_templates t ON t.speaker_id = s.id
+                    WHERE s.id=%s
+                    ORDER BY t.id
                     """,
                     (speaker_id,),
                 ).fetchall()
+                if not rows:
+                    return None
         except psycopg.Error as exc:
             raise SpeakerStoreError(f"说话人详情读取失败: {exc}") from exc
-        result = dict(row)
-        result["templates"] = list(templates)
+        first = rows[0]
+        result = {
+            key: first[key]
+            for key in (
+                "id",
+                "name",
+                "note",
+                "source",
+                "model_tag",
+                "created_at",
+                "updated_at",
+            )
+        }
+        result["templates"] = [
+            {
+                "id": row["template_id"],
+                "dur_sec": row["template_dur_sec"],
+                "created_at": row["template_created_at"],
+            }
+            for row in rows
+            if row["template_id"] is not None
+        ]
         return result
 
     def identify_detailed(
