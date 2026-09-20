@@ -430,7 +430,7 @@ class SpeakerService:
         if not enrollment.created:
             hit = enrollment.identification.as_match()
             if hit is None:
-                raise SpeakerStoreError("自动登记二次识别结果无效")
+                return self._anon(label)
             return {"label": label, **hit}
         return {
             "label": label,

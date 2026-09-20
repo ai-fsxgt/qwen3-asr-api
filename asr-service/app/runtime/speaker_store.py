@@ -146,8 +146,8 @@ class SpeakerAutoEnrollment:
     """跨实例自动登记结果。"""
 
     identification: SpeakerIdentification
-    speaker_id: str
-    name: str
+    speaker_id: str | None
+    name: str | None
     created: bool
 
 
@@ -907,6 +907,15 @@ class SpeakerStore:
                             identification=identification,
                             speaker_id=identification.speaker_id,
                             name=identification.name,
+                            created=False,
+                        )
+                    elif identification.reason == "ambiguous_margin":
+                        # 与多个已有档案过于接近时宁可保持匿名，
+                        # 避免新增近似档案后进一步压缩 top1-top2 margin。
+                        result = SpeakerAutoEnrollment(
+                            identification=identification,
+                            speaker_id=None,
+                            name=None,
                             created=False,
                         )
                     else:
