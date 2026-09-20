@@ -61,7 +61,7 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _read_source(path: Path) -> SourceData:
+def _read_source(path: Path, source_timezone: ZoneInfo) -> SourceData:
     if not path.is_file():
         raise ValueError(f"SQLite 文件不存在: {path}")
     try:
@@ -100,7 +100,7 @@ def _read_source(path: Path) -> SourceData:
     finally:
         if "connection" in locals():
             connection.close()
-    _validate_source(data)
+    _validate_source(data, source_timezone)
     return data
 
 
@@ -114,24 +114,61 @@ def _vector(blob: bytes, *, owner: str) -> np.ndarray:
     return vector
 
 
-def _validate_source(data: SourceData) -> None:
+def _validate_source(data: SourceData, source_timezone: ZoneInfo) -> None:
     speaker_ids = {row["id"] for row in data.speakers}
     for row in data.speakers:
         _vector(row["centroid"], owner=f"speaker {row['id']} centroid")
+        _timestamp(
+            row["created_at"],
+            source_timezone,
+            owner=f"speaker {row['id']} created_at",
+        )
+        _timestamp(
+            row["updated_at"],
+            source_timezone,
+            owner=f"speaker {row['id']} updated_at",
+        )
     for row in data.templates:
         if row["speaker_id"] not in speaker_ids:
             raise ValueError(f"模板 {row['id']} 引用了不存在的说话人")
         _vector(row["vector"], owner=f"template {row['id']}")
+        _timestamp(
+            row["created_at"],
+            source_timezone,
+            owner=f"template {row['id']} created_at",
+        )
     for row in data.claims:
         if row["speaker_id"] not in speaker_ids:
             raise ValueError(f"认领记录 {row['claim_key']} 引用了不存在的说话人")
         response = json.loads(row["response"])
         if not isinstance(response, dict):
             raise ValueError(f"认领记录 {row['claim_key']} 的 response 不是对象")
+        _timestamp(
+            row["created_at"],
+            source_timezone,
+            owner=f"claim {row['claim_key']} created_at",
+        )
+    for row in data.audits:
+        detail = json.loads(row["detail"]) if row["detail"] is not None else None
+        if detail is not None and not isinstance(detail, dict):
+            raise ValueError(f"审计记录 {row['id']} 的 detail 不是对象")
+        _timestamp(
+            row["ts"],
+            source_timezone,
+            owner=f"audit {row['id']} ts",
+        )
 
 
-def _timestamp(raw: str, source_timezone: ZoneInfo) -> datetime:
-    value = datetime.fromisoformat(raw)
+def _timestamp(
+    raw: str,
+    source_timezone: ZoneInfo,
+    *,
+    owner: str = "timestamp",
+) -> datetime:
+    try:
+        value = datetime.fromisoformat(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{owner} 无效: {raw!r}") from exc
     return value.replace(tzinfo=source_timezone) if value.tzinfo is None else value
 
 
@@ -157,6 +194,9 @@ def _insert_source(
     try:
         if not store.check_model_tag(data.model_tag):
             raise ValueError("目标库 model_tag 与源库不一致")
+        speakers_with_templates = {
+            row["speaker_id"] for row in data.templates
+        }
         with psycopg.connect(postgres_url, autocommit=True) as conn:
             register_vector(conn)
             with conn.transaction():
@@ -186,9 +226,13 @@ def _insert_source(
                             bool(row["consent"]),
                             row["source"],
                             row["model_tag"],
-                            _vector(
-                                row["centroid"],
-                                owner=f"speaker {row['id']} centroid",
+                            (
+                                _vector(
+                                    row["centroid"],
+                                    owner=f"speaker {row['id']} centroid",
+                                )
+                                if row["id"] in speakers_with_templates
+                                else None
                             ),
                             _timestamp(row["created_at"], source_timezone),
                             _timestamp(row["updated_at"], source_timezone),
@@ -224,7 +268,11 @@ def _insert_source(
                         ),
                     )
                 for row in data.audits:
-                    detail = json.loads(row["detail"]) if row["detail"] else None
+                    detail = (
+                        json.loads(row["detail"])
+                        if row["detail"] is not None
+                        else None
+                    )
                     conn.execute(
                         """
                         INSERT INTO speaker_audit_log(
@@ -286,7 +334,10 @@ def main() -> int:
     args = _parser().parse_args()
     try:
         source_timezone = ZoneInfo(args.source_timezone)
-        data = _read_source(Path(args.sqlite_path).expanduser().resolve())
+        data = _read_source(
+            Path(args.sqlite_path).expanduser().resolve(),
+            source_timezone,
+        )
         summary = {
             "speakers": len(data.speakers),
             "templates": len(data.templates),
