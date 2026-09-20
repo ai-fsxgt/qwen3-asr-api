@@ -146,7 +146,7 @@ docker run -d --gpus all \
   --model-size 0.6b --device auto --web
 ```
 
-`/app/data` holds the task-persistence DB `tasks.db` and voiceprint DB `speakers.db`; mount it to keep them across container re-creation (compose mounts it by default). CPU / ARM64 images (`latest-cpu` / `latest-arm64`) and more volume details: see the [Docker Hub page](https://hub.docker.com/r/lancelrq/qwen3-asr-service).
+`/app/data` holds the task-persistence DB `tasks.db` and real-time recordings; shared voiceprints live in an external PostgreSQL/pgvector database. The compose file mounts the local data directory by default. CPU / ARM64 images (`latest-cpu` / `latest-arm64`) and more volume details: see the [Docker Hub page](https://hub.docker.com/r/lancelrq/qwen3-asr-service).
 
 ### Using docker-compose
 
@@ -159,6 +159,8 @@ docker compose -f docker/docker-compose.yml down
 ```
 
 Startup parameters, API keys, port mappings, etc. can be configured in `docker/docker-compose.yml`. See comments in the file. The CPU variant lives in `docker/docker-compose.cpu.yml`.
+
+The voiceprint database uses a separate pgvector compose file. See [Shared Voiceprint Database Deployment and Accuracy](声纹识别共享库部署与准确度方案_EN.md) for deployment and multi-service configuration.
 
 ### vLLM Native Streaming Image (standalone)
 

@@ -16,7 +16,7 @@
 - [配置文件（config.yaml）](#配置文件configyaml)
 - [环境变量](#环境变量)
 - [离线任务持久化（tasks.db）](#离线任务持久化tasksdb)
-- [说话人分离与声纹库（speakers.db）](#说话人分离与声纹库speakersdb)
+- [说话人分离与共享声纹库](#说话人分离与共享声纹库)
 - [vLLM 原生流式模式](#vllm-原生流式模式)
 - [内置常量（app/config.py）](#内置常量appconfigpy)
 
@@ -132,11 +132,13 @@ volumes:
 | 参数 | 取值 | 默认值 | 说明 |
 |------|------|--------|------|
 | `--enable-speaker-db` / `--no-speaker-db` | - | 关闭 | 声纹库（登记 + 真名识别）：依赖 `enable_speaker` 且**必须配置 `api_key`**（声纹属生物识别信息，不允许无鉴权访问，否则模块自动降级关闭） |
-| `--speaker-db-path` | 路径 | `data/speakers.db` | 声纹库路径（相对服务根目录）；**数据永不自动清理** |
+| `--speaker-database-url` | PostgreSQL URL | 空 | 共享 PostgreSQL/pgvector 连接地址；生产推荐通过 `SPEAKER_DATABASE_URL` 环境变量传入 |
 | `--speaker-id-threshold` | 0–1 | `0.45` | 1:N 开集识别阈，最高相似度低于此判 unknown |
 | `--speaker-id-margin` | 0–1 | `0.10` | top1-top2 margin，差距小于此判 unknown（近邻打架宁缺勿错） |
+| `--speaker-identify-min-sec` | 秒 | `5.0` | 簇累计有效语音达到该时长后才查询声纹库 |
+| `--speaker-realtime-confirmations` | 数字 | `2` | 实时连续命中相同身份达到该次数后才展示姓名 |
 | `--speaker-enroll-min-sec` | 秒 | `3.0` | 手动登记单样本最短有效语音（VAD 后） |
-| `--speaker-auto-enroll` / `--no-speaker-auto-enroll` | - | 开启 | 离线识别未命中的说话人自动以「说话人_NN」登记（**开启 = 部署方声明已获数据主体同意**） |
+| `--speaker-auto-enroll` / `--no-speaker-auto-enroll` | - | 关闭 | 离线识别未命中的说话人自动以「说话人_NN」登记（**开启 = 部署方声明已获数据主体同意**） |
 | `--speaker-auto-enroll-min-sec` | 秒 | `10.0` | 自动登记的簇最短语音总时长（严于手动登记，降低噪声建档） |
 | `--speaker-store-audio` / `--no-speaker-store-audio` | - | 关闭 | 留存登记样本音频到 `data/speaker_audio/`（扩大合规面，默认关） |
 
@@ -229,6 +231,7 @@ bash start.sh --no-config
 |------|-----------|------|
 | `ASR_API_KEY` | `api_key` | API 密钥；优先级低于配置文件与命令行（配置文件中 `api_key: ""` 也会覆盖它——想用环境变量请删除该行） |
 | `MODEL_SOURCE` | `model_source` | 模型下载源 |
+| `SPEAKER_DATABASE_URL` | `speaker_database_url` | PostgreSQL/pgvector 连接地址；推荐用它避免把数据库密码写入配置文件 |
 
 空值环境变量视为未设置。
 
@@ -251,7 +254,7 @@ enable_task_store: true
 - 只保存文本结果与元数据，**不留存音频原件**；持久化写入失败只告警，不影响任务执行。
 - 删除 `data/tasks.db` = 清空历史记录，不影响服务功能。对内容留存有更严格要求时，调小 `task_retention_days` 或关闭开关。
 
-## 说话人分离与声纹库（speakers.db）
+## 说话人分离与共享声纹库
 
 ```yaml
 # config.yaml：开启分离（匿名标签）
@@ -262,13 +265,20 @@ enable_speaker_db: true
 api_key: "sk-your-key"
 ```
 
+数据库连接地址推荐通过环境变量提供：
+
+```bash
+export SPEAKER_DATABASE_URL='postgresql://qwen3_asr:强密码@数据库IP:5432/qwen3_asr'
+```
+
 ### 行为说明
 
 - **分离**：单文件/单会话作用域的匿名标签 `A`/`B`/`C`…，跨任务不保证同人同标签；任何环节失败只丢标签，转写不受影响。
 - **声纹库降级矩阵**：以下任一条件不满足时模块自动降级关闭（ERROR 日志 + `/v2/speakers*` 返回 503，服务正常启动）：① `enable_speaker` 开启且引擎加载成功；② `api_key` 非空；③ 建库成功。库内模板与当前引擎 `model_tag` 不一致时仅禁用登记/认领/识别，查看与删除保留（被遗忘权）。
-- **数据永不自动清理**：`speakers.db` 无 TTL（与 tasks.db 的 7 天清理不同）——声纹是长期积累资产，越用识别越准；唯一删除途径为 `DELETE /v2/speakers/{id}`（硬删除 + 物理回收）或删除库文件。
-- **自动登记**：开启 `identify_speakers` 的离线转写中，未命中库且语音足量（默认 ≥10s）的说话人自动登记为「说话人_NN」，在 `/web-ui/speakers` 或 `PATCH /v2/speakers/{id}` 改名后，后续转写直接显示真名；外部声纹档案需要用受控样本替换自动模板时，可调用 `POST /v2/speakers/{id}/claim` 认领并保留原 `speaker_id`。实时路径不自动登记（在线聚类漂移易重复建档）；已命中库的说话人也不会自动追加模板（防样本投毒），补充样本需手动调用 `POST /v2/speakers/{id}/templates`。
-- **合规**：登记接口强制 `consent=true` 双保险（接口 + 库约束）；开启自动登记即部署方声明已获数据主体同意；默认不留存音频；审计日志随库落盘。**备份 = 拷贝 `data/speakers.db` 单文件**（建议随常规备份计划），删库即彻底清除全部声纹数据。
+- **共享与留存**：所有实例直接查询同一 PostgreSQL/pgvector，不维护进程内全量缓存；声纹数据无 TTL，唯一删除途径为 `DELETE /v2/speakers/{id}`。数据库与数据卷应纳入常规备份。
+- **自动登记**：默认关闭。显式开启 `speaker_auto_enroll` 后，离线转写中未命中且语音足量（默认 ≥10s）的说话人才会登记为「说话人_NN」；实时路径不自动登记，已命中说话人也不会自动追加模板。补充样本使用 `POST /v2/speakers/{id}/templates`。
+- **准确度保护**：簇累计有效语音默认达到 5 秒后才识别；实时连续两次命中相同身份后才展示姓名；top1 低于阈值或 top1-top2 margin 不足时保持匿名。
+- **合规**：登记接口强制 `consent=true`；开启自动登记即部署方声明已获数据主体同意；默认不留存音频；审计记录持久化在 PostgreSQL 中。
 
 ## vLLM 原生流式模式
 

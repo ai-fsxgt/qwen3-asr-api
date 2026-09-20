@@ -76,6 +76,7 @@ def test_online_short_segment_attaches_without_update():
     before = oc.centroid_of("A").copy()
     assert oc.assign(around(unit(0)), 500) == "A"  # 挂靠成功
     assert np.allclose(oc.centroid_of("A"), before)  # 质心不更新
+    assert oc.duration_sec_of("A") == pytest.approx(3.0)  # 不计入识别证据时长
     assert oc.assign(unit(1), 500) is None  # 相似度不够 → 不建簇返回 None
     assert len(oc.centroids) == 1
 

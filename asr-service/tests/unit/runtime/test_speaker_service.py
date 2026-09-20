@@ -1,4 +1,4 @@
-"""app/runtime/speaker_service.py 单元测试（真 SpeakerStore 临时库 + fake 引擎/VAD）。
+"""app/runtime/speaker_service.py 单元测试（内存 Store + fake 引擎/VAD）。
 
 覆盖：enroll 质量门槛（时长/多人/consent）、模板均值入库、identify_file、
 map_clusters 异常兜底、自动登记分支全集（过门槛/时长不足/开关关/序号递增/失败退回匿名）、
@@ -7,23 +7,21 @@ map_clusters 异常兜底、自动登记分支全集（过门槛/时长不足/�
 import os
 import threading
 import types
+import uuid
 
 import numpy as np
-import psycopg
 import pytest
 
 import app.config as cfg
 from app.runtime.speaker_service import SpeakerService
-from app.runtime.speaker_store import SpeakerClaimConflictError, SpeakerStore
+from app.runtime.speaker_store import (
+    SpeakerAutoEnrollment,
+    SpeakerClaimConflictError,
+    SpeakerIdentification,
+    SpeakerStoreError,
+)
 
 DIM = 192
-TAG = "campplus_cn_common@v1"
-DATABASE_URL = os.environ.get("TEST_SPEAKER_DATABASE_URL")
-
-pytestmark = pytest.mark.skipif(
-    not DATABASE_URL,
-    reason="未配置 TEST_SPEAKER_DATABASE_URL",
-)
 
 
 def unit(i: int) -> np.ndarray:
@@ -47,6 +45,258 @@ class FakeEngine:
         return np.stack(out)
 
 
+class FakeSpeakerStore:
+    """只实现 SpeakerService 所需契约，避免单元测试依赖外部数据库。"""
+
+    def __init__(self):
+        self._speakers = {}
+        self._claims = {}
+        self._next_template_id = 1
+        self._auto_name_seq = 0
+        self._closed = False
+        self._lock = threading.RLock()
+
+    def _ensure_open(self):
+        if self._closed:
+            raise SpeakerStoreError("声纹库连接池已关闭")
+
+    @staticmethod
+    def _centroid(vectors):
+        centroid = np.stack(vectors).mean(axis=0)
+        return centroid / np.linalg.norm(centroid)
+
+    def _new_templates(self, vectors, durations):
+        templates = []
+        for vector, duration in zip(vectors, durations, strict=True):
+            templates.append({
+                "id": self._next_template_id,
+                "vector": np.asarray(vector, dtype=np.float32),
+                "dur_sec": float(duration),
+            })
+            self._next_template_id += 1
+        return templates
+
+    def enroll_speaker(
+        self,
+        name,
+        note,
+        vectors,
+        durations,
+        consent,
+        source="manual",
+    ):
+        self._ensure_open()
+        if consent is not True:
+            raise SpeakerStoreError("登记必须携带 consent=true")
+        with self._lock:
+            speaker_id = uuid.uuid4().hex
+            self._speakers[speaker_id] = {
+                "id": speaker_id,
+                "name": name,
+                "note": note,
+                "source": source,
+                "centroid": self._centroid(vectors),
+                "templates": self._new_templates(vectors, durations),
+            }
+            return speaker_id
+
+    def get_speaker(self, speaker_id):
+        self._ensure_open()
+        with self._lock:
+            row = self._speakers.get(speaker_id)
+            if row is None:
+                return None
+            return {
+                "id": row["id"],
+                "name": row["name"],
+                "note": row["note"],
+                "source": row["source"],
+                "templates": [
+                    {
+                        "id": template["id"],
+                        "dur_sec": template["dur_sec"],
+                    }
+                    for template in row["templates"]
+                ],
+            }
+
+    def delete_speaker(self, speaker_id):
+        self._ensure_open()
+        with self._lock:
+            self._speakers.pop(speaker_id, None)
+
+    def resolve_claim(self, speaker_id, claim_key):
+        self._ensure_open()
+        with self._lock:
+            claim = self._claims.get(claim_key)
+            if claim is not None:
+                if claim["speaker_id"] != speaker_id:
+                    owner = self._speakers[claim["speaker_id"]]
+                    raise SpeakerClaimConflictError(
+                        "claim_key_conflict",
+                        "claim_key 已用于其他说话人",
+                        speaker_id=owner["id"],
+                        speaker_name=owner["name"],
+                        source=owner["source"],
+                    )
+                return claim["response"]
+            speaker = self._speakers[speaker_id]
+            if speaker["source"] != "auto":
+                raise SpeakerClaimConflictError(
+                    "speaker_not_claimable",
+                    "仅自动登记的说话人可以被认领",
+                    speaker_id=speaker_id,
+                    speaker_name=speaker["name"],
+                    source=speaker["source"],
+                )
+            return None
+
+    def claim_auto_speaker(
+        self,
+        speaker_id,
+        name,
+        note,
+        vectors,
+        durations,
+        claim_key,
+        quality_hint=None,
+    ):
+        self._ensure_open()
+        with self._lock:
+            replay = self.resolve_claim(speaker_id, claim_key)
+            if replay is not None:
+                return replay, False
+            templates = self._new_templates(vectors, durations)
+            speaker = self._speakers[speaker_id]
+            speaker.update({
+                "name": name,
+                "note": note,
+                "source": "manual",
+                "centroid": self._centroid(vectors),
+                "templates": templates,
+            })
+            response = {
+                "speaker_id": speaker_id,
+                "name": name,
+                "source": "manual",
+                "templates": len(templates),
+                "template_ids": [template["id"] for template in templates],
+                "quality_hint": quality_hint,
+            }
+            self._claims[claim_key] = {
+                "speaker_id": speaker_id,
+                "response": response,
+            }
+            return response, True
+
+    def _identify_locked(self, vector, threshold, margin):
+        rows = sorted(
+            (
+                (float(speaker["centroid"] @ vector), speaker)
+                for speaker in self._speakers.values()
+                if speaker["templates"]
+            ),
+            key=lambda item: item[0],
+            reverse=True,
+        )[:2]
+        if not rows:
+            return SpeakerIdentification(False, "empty_library")
+        top1 = rows[0][0]
+        top2 = rows[1][0] if len(rows) > 1 else None
+        score_margin = top1 - top2 if top2 is not None else None
+        if top1 < threshold:
+            return SpeakerIdentification(
+                False,
+                "below_threshold",
+                top1_score=top1,
+                top2_score=top2,
+                margin=score_margin,
+            )
+        if score_margin is not None and score_margin < margin:
+            return SpeakerIdentification(
+                False,
+                "ambiguous_margin",
+                top1_score=top1,
+                top2_score=top2,
+                margin=score_margin,
+            )
+        speaker = rows[0][1]
+        return SpeakerIdentification(
+            True,
+            "matched",
+            top1_score=top1,
+            top2_score=top2,
+            margin=score_margin,
+            speaker_id=speaker["id"],
+            name=speaker["name"],
+            source=speaker["source"],
+        )
+
+    def identify_detailed(self, vector, threshold=0.45, margin=0.10):
+        self._ensure_open()
+        with self._lock:
+            return self._identify_locked(vector, threshold, margin)
+
+    def identify(
+        self,
+        vector,
+        threshold=0.45,
+        margin=0.10,
+        *,
+        include_source=False,
+    ):
+        return self.identify_detailed(vector, threshold, margin).as_match(
+            include_source=include_source
+        )
+
+    def identify_or_enroll_auto(
+        self,
+        vector,
+        duration,
+        *,
+        threshold,
+        margin,
+    ):
+        self._ensure_open()
+        with self._lock:
+            identification = self._identify_locked(vector, threshold, margin)
+            if identification.matched:
+                return SpeakerAutoEnrollment(
+                    identification,
+                    identification.speaker_id,
+                    identification.name,
+                    False,
+                )
+            self._auto_name_seq += 1
+            name = f"说话人_{self._auto_name_seq:02d}"
+            speaker_id = self.enroll_speaker(
+                name,
+                None,
+                [vector],
+                [duration],
+                True,
+                source="auto",
+            )
+            return SpeakerAutoEnrollment(
+                identification,
+                speaker_id,
+                name,
+                True,
+            )
+
+    def audit(self, *args, **kwargs):
+        self._ensure_open()
+
+    @property
+    def speaker_count(self):
+        self._ensure_open()
+        with self._lock:
+            return len(self._speakers)
+
+    def close(self):
+        self._closed = True
+
+
 def make_vad(segments):
     return types.SimpleNamespace(detect=lambda p: segments)
 
@@ -65,15 +315,7 @@ def env(tmp_path, monkeypatch):
 
 @pytest.fixture
 def store():
-    s = SpeakerStore(DATABASE_URL, model_tag=TAG)
-    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
-        conn.execute(
-            "TRUNCATE speaker_audit_log, speaker_claims, "
-            "speaker_templates, speakers RESTART IDENTITY CASCADE"
-        )
-        conn.execute("DELETE FROM speaker_meta WHERE key='auto_name_seq'")
-    yield s
-    s.close()
+    return FakeSpeakerStore()
 
 
 def make_service(store, engine=None, vad_segments=((0, 5000),)):

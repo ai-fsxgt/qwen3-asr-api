@@ -23,12 +23,12 @@
 | 层 | 开关 | 产出 |
 |----|------|------|
 | **说话人分离**（匿名） | `enable_speaker` | 离线 `segments[].speaker` 与顶层 `speakers`、实时 `final.speaker`——标签 `A`/`B`/`C`… 按首次开口顺序，**作用域为单文件/单会话**（跨任务不保证同人同标签） |
-| **声纹识别**（真名） | `enable_speaker_db`（依赖上一层 + 必须配置 `api_key`） | 请求级 `identify_speakers=true` 时比对声纹库：命中输出 `speaker_name`；离线未命中且语音足量（默认 ≥10s）的说话人**自动登记**为「说话人_NN」占位名（`speaker_auto_enroll`，可关），改名见[列表 / 详情 / 改名备注 / 删除](#列表--详情--改名备注--删除) |
+| **声纹识别**（真名） | `enable_speaker_db`（依赖上一层 + 必须配置 `api_key`） | 请求级 `identify_speakers=true` 时比对共享 PostgreSQL/pgvector 声纹库：命中输出 `speaker_name`；`speaker_auto_enroll` 默认关闭，显式开启后离线未命中且语音足量（默认 ≥10s）的说话人才登记为「说话人_NN」 |
 
 要点：
 
 - **失败永远优雅降级**：分离/识别任一环节失败只丢标签/真名，转写结果不受影响。
-- **实时识别"以最新 final 为准"**：早期 final 可能无 `speaker_name`（质心未稳定），后续命中后新 final 携带真名，**不回改历史消息**；实时路径不自动登记。
+- **实时识别"以最新 final 为准"**：簇累计有效语音默认达到 5 秒后才查询声纹库，并且连续两次命中相同身份后才展示 `speaker_name`；历史消息不回改，实时路径不自动登记。
 - `speakers[].speaker_id` 为**纯值快照**：与任务库无关联，说话人被删除后历史任务中的 id 悬空（`GET /v2/speakers/{id}` 返回 404 即"已删除"），调用方需容忍。
 - 自动登记的 consent 语义：开启 `speaker_auto_enroll` 即部署方声明已获得数据主体对声纹登记的同意（与手动登记 `consent=true` 同一责任归属）。
 
@@ -139,10 +139,10 @@ DELETE /v2/speakers/{id}            → 硬删除（级联模板 + 物理回收 
 ```
 POST   /v2/speakers/{id}/templates          （multipart file）→ 201，追加样本并重算质心（每人上限 16）
 DELETE /v2/speakers/{id}/templates/{tid}    → {"remaining": N, "hint"?}（剩 0 模板不自动删人，hint 提示补样本或删除）
-POST   /v2/speakers/identify                （multipart file）→ {"matched": bool, "speaker_id"?, "name"?, "source"?, "score"?}
+POST   /v2/speakers/identify                （multipart file）→ {"matched": bool, "speaker_id"?, "name"?, "source"?, "score"?, "top2_score"?, "margin"?, "reason"?}
 ```
 
-识别为 1:N 开集判定：最高相似度低于阈值（`speaker_id_threshold`，默认 0.45）或与次高差距过小（`speaker_id_margin`，默认 0.10——近邻打架宁缺勿错）时返回 `matched: false`。命中时 `source` 为 `manual` 或 `auto`，调用方可据此决定提示重复或调用认领接口。
+识别为 1:N 开集判定：最高相似度低于阈值（`speaker_id_threshold`，默认 0.45）或与次高差距过小（`speaker_id_margin`，默认 0.10——近邻打架宁缺勿错）时返回 `matched: false`。`reason` 为 `matched`、`empty_library`、`below_threshold` 或 `ambiguous_margin`；`score`、`top2_score` 和 `margin` 用于阈值标定。命中时 `source` 为 `manual` 或 `auto`。
 
 ### 错误码
 

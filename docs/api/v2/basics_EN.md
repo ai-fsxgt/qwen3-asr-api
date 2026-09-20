@@ -64,6 +64,7 @@ GET /v2/health
   "punc_enabled": false,
   "speaker_enabled": false,
   "speaker_db_enabled": false,
+  "speaker_db_backend": null,
   "asr_backend": "qwen_asr",
   "vad_backend": "pytorch",
   "punc_backend": "pytorch",
@@ -96,6 +97,7 @@ GET /v2/health
 | punc_enabled | Whether punctuation restoration is enabled |
 | speaker_enabled | Whether speaker diarization is enabled (`enable_speaker`) |
 | speaker_db_enabled | Whether the voiceprint database is available (enabled and model_tag matches) |
+| speaker_db_backend | Voiceprint storage backend; `pgvector` when connected, otherwise `null` |
 | asr_backend | ASR backend: `qwen_asr` / `openvino` |
 | vad_backend | VAD backend: `pytorch` / `onnx` |
 | punc_backend | Punctuation backend: `pytorch` / `onnx` / `disabled` |

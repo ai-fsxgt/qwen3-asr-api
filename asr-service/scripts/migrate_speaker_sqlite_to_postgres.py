@@ -67,6 +67,8 @@ def _read_source(path: Path) -> SourceData:
     try:
         connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         connection.row_factory = sqlite3.Row
+        # 所有表必须来自同一读取快照，避免旧服务写入时读到跨时点数据。
+        connection.execute("BEGIN")
         meta = {
             row["key"]: row["value"]
             for row in connection.execute("SELECT key, value FROM meta")
@@ -157,10 +159,18 @@ def _insert_source(
             raise ValueError("目标库 model_tag 与源库不一致")
         with psycopg.connect(postgres_url, autocommit=True) as conn:
             register_vector(conn)
-            counts = _target_counts(conn)
-            if any(counts.values()):
-                raise ValueError(f"目标库不是空库，拒绝迁移: {counts}")
             with conn.transaction():
+                # 阻止运行中的 ASR 实例在空库检查与迁移提交之间写入。
+                conn.execute(
+                    """
+                    LOCK TABLE speakers, speaker_templates, speaker_claims,
+                      speaker_audit_log, speaker_meta
+                    IN ACCESS EXCLUSIVE MODE
+                    """
+                )
+                counts = _target_counts(conn)
+                if any(counts.values()):
+                    raise ValueError(f"目标库不是空库，拒绝迁移: {counts}")
                 for row in data.speakers:
                     conn.execute(
                         """
@@ -256,15 +266,18 @@ def _insert_source(
                     ) FROM speaker_audit_log
                     """
                 )
-            expected = {
-                "speakers": len(data.speakers),
-                "templates": len(data.templates),
-                "claims": len(data.claims),
-                "audits": len(data.audits),
-            }
-            actual = _target_counts(conn)
-            if actual != expected:
-                raise RuntimeError(f"迁移后计数校验失败: expected={expected}, actual={actual}")
+                expected = {
+                    "speakers": len(data.speakers),
+                    "templates": len(data.templates),
+                    "claims": len(data.claims),
+                    "audits": len(data.audits),
+                }
+                actual = _target_counts(conn)
+                if actual != expected:
+                    raise RuntimeError(
+                        "迁移后计数校验失败: "
+                        f"expected={expected}, actual={actual}"
+                    )
     finally:
         store.close()
 

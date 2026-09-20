@@ -23,12 +23,12 @@ Two layers of capability, both disabled by default and enabled on demand (config
 | Layer | Switch | Output |
 |-------|--------|--------|
 | **Speaker diarization** (anonymous) | `enable_speaker` | Offline `segments[].speaker` and top-level `speakers`, real-time `final.speaker` — labels `A`/`B`/`C`… ordered by first time speaking, **scoped to a single file / single session** (same person is not guaranteed to keep the same label across tasks) |
-| **Voiceprint identification** (real name) | `enable_speaker_db` (depends on the layer above + `api_key` must be configured) | When the request sets `identify_speakers=true`, speakers are matched against the voiceprint database: matches emit `speaker_name`; offline, an unmatched speaker with enough speech (default ≥10s) is **auto-enrolled** under a placeholder name `说话人_NN` (Chinese for "Speaker_NN") (`speaker_auto_enroll`, can be turned off), renaming via [List / Detail / Rename & Note / Delete](#list--detail--rename--note--delete) |
+| **Voiceprint identification** (real name) | `enable_speaker_db` (depends on the layer above + `api_key` must be configured) | With `identify_speakers=true`, speakers are matched against the shared PostgreSQL/pgvector database and matches emit `speaker_name`. `speaker_auto_enroll` is disabled by default; when explicitly enabled, only unmatched offline speakers with enough speech (default ≥10s) are enrolled as `说话人_NN` |
 
 Key points:
 
 - **Failures always degrade gracefully**: a failure in any diarization/identification step only drops the label/real name; the transcription result is unaffected.
-- **Real-time identification follows "latest final wins"**: early finals may have no `speaker_name` (centroid not yet stable); once a later match is found, new finals carry the real name, and **historical messages are not rewritten**; the real-time path does not auto-enroll.
+- **Real-time identification follows "latest final wins"**: the database is queried after a cluster accumulates 5 seconds of speech by default, and a name is exposed after two consecutive matches. Historical messages are not rewritten, and the real-time path does not auto-enroll.
 - `speakers[].speaker_id` is a **pure value snapshot**: it has no association with the task store; after a speaker is deleted, the id in historical tasks dangles (`GET /v2/speakers/{id}` returning 404 means "deleted"), and callers must tolerate this.
 - Consent semantics of auto-enrollment: enabling `speaker_auto_enroll` means the deployer declares that consent for voiceprint enrollment has been obtained from the data subject (the same liability attribution as manual enrollment with `consent=true`).
 
@@ -139,10 +139,10 @@ DELETE /v2/speakers/{id}            → hard delete (cascades templates + physic
 ```
 POST   /v2/speakers/{id}/templates          (multipart file) → 201, appends a sample and recomputes the centroid (max 16 per speaker)
 DELETE /v2/speakers/{id}/templates/{tid}    → {"remaining": N, "hint"?} (reaching 0 templates does not auto-delete the speaker; hint suggests adding samples or deleting)
-POST   /v2/speakers/identify                (multipart file) → {"matched": bool, "speaker_id"?, "name"?, "source"?, "score"?}
+POST   /v2/speakers/identify                (multipart file) → {"matched": bool, "speaker_id"?, "name"?, "source"?, "score"?, "top2_score"?, "margin"?, "reason"?}
 ```
 
-Identification is a 1:N open-set decision: it returns `matched: false` when the highest similarity is below the threshold (`speaker_id_threshold`, default 0.45) or when the margin to the second-highest is too small (`speaker_id_margin`, default 0.10 — when nearest neighbors clash, prefer no answer over a wrong one). On a match, `source` is `manual` or `auto`, allowing callers to choose between reporting a duplicate and invoking the claim endpoint.
+Identification is a 1:N open-set decision: it returns `matched: false` when the highest similarity is below the threshold (`speaker_id_threshold`, default 0.45) or when the margin to the second-highest is too small (`speaker_id_margin`, default 0.10). `reason` is `matched`, `empty_library`, `below_threshold`, or `ambiguous_margin`; `score`, `top2_score`, and `margin` support threshold calibration. On a match, `source` is `manual` or `auto`.
 
 ### Error Codes
 

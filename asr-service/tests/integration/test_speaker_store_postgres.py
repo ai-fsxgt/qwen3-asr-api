@@ -3,6 +3,7 @@
 设置 TEST_SPEAKER_DATABASE_URL 后运行；测试库必须是可清空的专用数据库。
 """
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -30,6 +31,36 @@ def unit(index: int) -> np.ndarray:
     vector = np.zeros(DIM, dtype=np.float32)
     vector[index] = 1.0
     return vector
+
+
+def test_concurrent_initialization_on_empty_database():
+    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
+        conn.execute(
+            """
+            DROP TABLE IF EXISTS speaker_audit_log, speaker_claims,
+              speaker_templates, speakers, speaker_meta CASCADE
+            """
+        )
+        conn.execute("DROP EXTENSION IF EXISTS vector")
+
+    barrier = threading.Barrier(8)
+
+    def open_store(_index):
+        barrier.wait()
+        return SpeakerStore(
+            DATABASE_URL,
+            model_tag=TAG,
+            pool_min_size=1,
+            pool_max_size=1,
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        stores = list(executor.map(open_store, range(8)))
+    try:
+        assert len(stores) == 8
+    finally:
+        for instance in stores:
+            instance.close()
 
 
 @pytest.fixture
@@ -158,6 +189,34 @@ def test_auto_name_allocation_is_atomic_across_instances(store):
         assert len(set(names)) == 20
         assert min(names) == "说话人_01"
         assert max(names) == "说话人_20"
+    finally:
+        second.close()
+
+
+def test_auto_enroll_is_atomic_across_instances(store):
+    second = SpeakerStore(DATABASE_URL, model_tag=TAG)
+    barrier = threading.Barrier(2)
+
+    def auto_enroll(instance):
+        barrier.wait()
+        return instance.identify_or_enroll_auto(
+            unit(0),
+            12.0,
+            threshold=0.45,
+            margin=0.10,
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(
+                executor.map(
+                    auto_enroll,
+                    (store, second),
+                )
+            )
+        assert sum(result.created for result in results) == 1
+        assert len({result.speaker_id for result in results}) == 1
+        assert store.speaker_count == 1
     finally:
         second.close()
 

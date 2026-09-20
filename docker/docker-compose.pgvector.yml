@@ -10,9 +10,9 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-qwen3_asr}
       POSTGRES_USER: ${POSTGRES_USER:-qwen3_asr}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qwen3_asr_change_me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?必须设置 POSTGRES_PASSWORD}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

@@ -64,6 +64,7 @@ GET /v2/health
   "punc_enabled": false,
   "speaker_enabled": false,
   "speaker_db_enabled": false,
+  "speaker_db_backend": null,
   "asr_backend": "qwen_asr",
   "vad_backend": "pytorch",
   "punc_backend": "pytorch",
@@ -96,6 +97,7 @@ GET /v2/health
 | punc_enabled | 是否启用标点恢复 |
 | speaker_enabled | 是否启用说话人分离（`enable_speaker`） |
 | speaker_db_enabled | 声纹库是否可用（启用且 model_tag 一致） |
+| speaker_db_backend | 声纹库存储后端；已连接共享库时为 `pgvector`，未启用时为 `null` |
 | asr_backend | ASR 后端：`qwen_asr` / `openvino` |
 | vad_backend | VAD 后端：`pytorch` / `onnx` |
 | punc_backend | 标点后端：`pytorch` / `onnx` / `disabled` |

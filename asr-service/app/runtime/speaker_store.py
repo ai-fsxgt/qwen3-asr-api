@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -140,6 +141,16 @@ class SpeakerIdentification:
         return result
 
 
+@dataclass(frozen=True)
+class SpeakerAutoEnrollment:
+    """跨实例自动登记结果。"""
+
+    identification: SpeakerIdentification
+    speaker_id: str
+    name: str
+    created: bool
+
+
 class SpeakerStore:
     """共享 PostgreSQL 声纹库。"""
 
@@ -148,6 +159,8 @@ class SpeakerStore:
     MAX_TEMPLATES = 16
     MAX_CLAIM_KEY_LENGTH = 128
     _NORM_TOL = 1e-3
+    _AUTO_ENROLL_LOCK = "qwen3-asr:speaker-auto-enroll"
+    _SCHEMA_INIT_LOCK = "qwen3-asr:speaker-schema-init"
 
     def __init__(
         self,
@@ -167,18 +180,18 @@ class SpeakerStore:
         self.model_tag = model_tag
         self._pool: ConnectionPool | None = None
         try:
-            self._bootstrap_extension(database_url)
-            self._pool = ConnectionPool(
-                conninfo=database_url,
-                min_size=pool_min_size,
-                max_size=pool_max_size,
-                timeout=pool_timeout,
-                kwargs={"autocommit": True, "row_factory": dict_row},
-                configure=self._configure_connection,
-                open=True,
-            )
-            self._pool.wait(timeout=pool_timeout)
-            self._initialize_schema()
+            with self._schema_initialization_lock(database_url):
+                self._pool = ConnectionPool(
+                    conninfo=database_url,
+                    min_size=pool_min_size,
+                    max_size=pool_max_size,
+                    timeout=pool_timeout,
+                    kwargs={"autocommit": True, "row_factory": dict_row},
+                    configure=self._configure_connection,
+                    open=True,
+                )
+                self._pool.wait(timeout=pool_timeout)
+                self._initialize_schema()
         except Exception as exc:
             if self._pool is not None:
                 self._pool.close()
@@ -191,11 +204,23 @@ class SpeakerStore:
             self.speaker_count,
         )
 
-    @staticmethod
-    def _bootstrap_extension(database_url: str) -> None:
-        """先创建 vector 扩展；类型存在后连接池才能注册适配器。"""
+    @classmethod
+    @contextmanager
+    def _schema_initialization_lock(cls, database_url: str):
+        """跨实例串行创建 vector 扩展和声纹表结构。"""
         with psycopg.connect(database_url, autocommit=True) as conn:
-            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            conn.execute(
+                "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
+                (cls._SCHEMA_INIT_LOCK,),
+            )
+            try:
+                conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                yield
+            finally:
+                conn.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+                    (cls._SCHEMA_INIT_LOCK,),
+                )
 
     @staticmethod
     def _configure_connection(conn: psycopg.Connection) -> None:
@@ -383,6 +408,40 @@ class SpeakerStore:
             template_ids.append(int(row["id"]))
         return template_ids
 
+    def _insert_speaker(
+        self,
+        conn: psycopg.Connection,
+        name: str,
+        note: str | None,
+        vectors: list[np.ndarray],
+        durations: list[float],
+        centroid: np.ndarray,
+        *,
+        source: str,
+    ) -> str:
+        speaker_id = uuid.uuid4().hex
+        now = self._now()
+        conn.execute(
+            """
+            INSERT INTO speakers(
+              id, name, note, consent, source, model_tag,
+              centroid, created_at, updated_at
+            ) VALUES(%s, %s, %s, TRUE, %s, %s, %s, %s, %s)
+            """,
+            (
+                speaker_id,
+                name,
+                note,
+                source,
+                self.model_tag,
+                centroid,
+                now,
+                now,
+            ),
+        )
+        self._insert_templates(conn, speaker_id, vectors, durations, now)
+        return speaker_id
+
     def _recompute_centroid(
         self,
         conn: psycopg.Connection,
@@ -425,31 +484,17 @@ class SpeakerStore:
         if consent is not True:
             raise SpeakerStoreError("登记必须携带 consent=true（数据主体同意）")
         validated, durations, centroid = self._validate_templates(vectors, durs)
-        speaker_id = uuid.uuid4().hex
-        now = self._now()
         try:
             with self._connection() as conn:
                 with conn.transaction():
-                    conn.execute(
-                        """
-                        INSERT INTO speakers(
-                          id, name, note, consent, source, model_tag,
-                          centroid, created_at, updated_at
-                        ) VALUES(%s, %s, %s, TRUE, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            speaker_id,
-                            name,
-                            note,
-                            source,
-                            self.model_tag,
-                            centroid,
-                            now,
-                            now,
-                        ),
-                    )
-                    self._insert_templates(
-                        conn, speaker_id, validated, durations, now
+                    speaker_id = self._insert_speaker(
+                        conn,
+                        name,
+                        note,
+                        validated,
+                        durations,
+                        centroid,
+                        source=source,
                     )
         except SpeakerStoreError:
             raise
@@ -549,21 +594,25 @@ class SpeakerStore:
         )
         return response, True
 
+    @staticmethod
+    def _allocate_auto_name(conn: psycopg.Connection) -> str:
+        row = conn.execute(
+            """
+            INSERT INTO speaker_meta(key, value)
+            VALUES('auto_name_seq', '1')
+            ON CONFLICT (key) DO UPDATE
+            SET value=(speaker_meta.value::BIGINT + 1)::TEXT
+            RETURNING value
+            """
+        ).fetchone()
+        return f"说话人_{int(row['value']):02d}"
+
     def alloc_auto_name(self) -> str:
         try:
             with self._connection() as conn:
-                row = conn.execute(
-                    """
-                    INSERT INTO speaker_meta(key, value)
-                    VALUES('auto_name_seq', '1')
-                    ON CONFLICT (key) DO UPDATE
-                    SET value=(speaker_meta.value::BIGINT + 1)::TEXT
-                    RETURNING value
-                    """
-                ).fetchone()
+                return self._allocate_auto_name(conn)
         except psycopg.Error as exc:
             raise SpeakerStoreError(f"占位名序号分配失败: {exc}") from exc
-        return f"说话人_{int(row['value']):02d}"
 
     def add_template(
         self,
@@ -764,20 +813,34 @@ class SpeakerStore:
         vector = self._validate_vector(emb)
         try:
             with self._connection() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT id, name, source,
-                           1 - (centroid <=> %s) AS score
-                    FROM speakers
-                    WHERE model_tag=%s AND centroid IS NOT NULL
-                    ORDER BY centroid <=> %s
-                    LIMIT 2
-                    """,
-                    (vector, self.model_tag, vector),
-                ).fetchall()
+                return self._identify_with_connection(
+                    conn,
+                    vector,
+                    threshold=threshold,
+                    margin=margin,
+                )
         except psycopg.Error as exc:
             raise SpeakerStoreError(f"声纹识别查询失败: {exc}") from exc
 
+    def _identify_with_connection(
+        self,
+        conn: psycopg.Connection,
+        vector: np.ndarray,
+        *,
+        threshold: float,
+        margin: float,
+    ) -> SpeakerIdentification:
+        rows = conn.execute(
+            """
+            SELECT id, name, source,
+                   1 - (centroid <=> %s) AS score
+            FROM speakers
+            WHERE model_tag=%s AND centroid IS NOT NULL
+            ORDER BY centroid <=> %s
+            LIMIT 2
+            """,
+            (vector, self.model_tag, vector),
+        ).fetchall()
         if not rows:
             return SpeakerIdentification(False, "empty_library")
         top1 = float(rows[0]["score"])
@@ -809,6 +872,72 @@ class SpeakerStore:
             name=rows[0]["name"],
             source=rows[0]["source"],
         )
+
+    def identify_or_enroll_auto(
+        self,
+        emb: np.ndarray,
+        dur_sec: float,
+        *,
+        threshold: float,
+        margin: float,
+    ) -> SpeakerAutoEnrollment:
+        """跨实例串行执行二次识别，仍未命中时原子自动登记。"""
+        vector = self._validate_vector(emb)
+        duration = self._validate_durations([dur_sec])[0]
+        try:
+            with self._connection() as conn:
+                with conn.transaction():
+                    conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (self._AUTO_ENROLL_LOCK,),
+                    )
+                    identification = self._identify_with_connection(
+                        conn,
+                        vector,
+                        threshold=threshold,
+                        margin=margin,
+                    )
+                    if identification.matched:
+                        if (
+                            identification.speaker_id is None
+                            or identification.name is None
+                        ):
+                            raise SpeakerStoreError("声纹识别结果缺少说话人信息")
+                        result = SpeakerAutoEnrollment(
+                            identification=identification,
+                            speaker_id=identification.speaker_id,
+                            name=identification.name,
+                            created=False,
+                        )
+                    else:
+                        name = self._allocate_auto_name(conn)
+                        speaker_id = self._insert_speaker(
+                            conn,
+                            name,
+                            None,
+                            [vector],
+                            [duration],
+                            vector,
+                            source="auto",
+                        )
+                        result = SpeakerAutoEnrollment(
+                            identification=identification,
+                            speaker_id=speaker_id,
+                            name=name,
+                            created=True,
+                        )
+        except SpeakerStoreError:
+            raise
+        except psycopg.Error as exc:
+            raise SpeakerStoreError(f"自动登记失败: {exc}") from exc
+
+        if result.created:
+            self.audit(
+                "auto_enroll",
+                result.speaker_id,
+                {"name": result.name, "templates": 1},
+            )
+        return result
 
     def identify(
         self,
