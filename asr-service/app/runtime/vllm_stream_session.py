@@ -21,6 +21,7 @@ import numpy as np
 
 import app.config as cfg
 from app.runtime.speaker_cluster import OnlineSpeakerClusterer
+from app.runtime.speaker_identity import RealtimeIdentityTracker
 from app.utils.audio_resampler import pcm_bytes_to_array, resample_to_16k
 from app.runtime.noise_gate import rms_dbfs
 from app.utils.validation import (
@@ -92,14 +93,23 @@ def _embed_speaker_segment(speaker, audio: _SegmentAudioBuffer):
     return embedding, duration_ms
 
 
-def _map_speaker_name(service, label, centroid, threshold, margin):
-    """在线程池中执行同步声纹库查询，只返回命中的名字。"""
+def _map_speaker_identity(
+    service,
+    label,
+    centroid,
+    duration_sec,
+    threshold,
+    margin,
+):
+    """在线程池中执行同步声纹库查询，返回完整匹配结果。"""
     mapping = service.map_clusters(
-        [{"label": label, "centroid": centroid}],
+        [{"label": label, "centroid": centroid, "dur_sec": duration_sec}],
         id_threshold=threshold,
         id_margin=margin,
     )
-    return mapping[0].get("name") if mapping else None
+    if not mapping or not mapping[0].get("speaker_id"):
+        return None
+    return mapping[0]
 
 
 class EnergyEndpointer:
@@ -177,7 +187,9 @@ class VllmStreamSession:
         self._last_partial = ""
         self._segment_audio = None             # 当前硬分段 PCM（仅 diarize 开启时）
         self._spk_cluster = None               # configure() 时创建，会话级不回溯聚类
-        self._spk_name_cache = {}              # label -> {name,count,ver}
+        self._spk_identity_tracker = RealtimeIdentityTracker(
+            cfg.SPEAKER_REALTIME_CONFIRMATIONS
+        )
         self._generation = 0                   # configure/close 后使在途说话人结果失效
 
     def _reset_speaker_options(self):
@@ -273,7 +285,9 @@ class VllmStreamSession:
             )
         else:
             self._spk_cluster = None
-        self._spk_name_cache = {}
+        self._spk_identity_tracker = RealtimeIdentityTracker(
+            cfg.SPEAKER_REALTIME_CONFIRMATIONS
+        )
         warnings = self._collect_ignored_params(cfg_msg)
         logger.info(f"[vllm-stream] 会话配置 sid={self.sid[:8]} audio_fs={self.audio_fs} "
                     f"language={self.language} chunk={self._chunk_size_sec or '默认'} "
@@ -353,22 +367,19 @@ class VllmStreamSession:
         service = self._speaker_service
         if service is None:
             return None
-        version = service.store.cache_version
-        count = max(cluster.count_of(label), 1)
-        cached = self._spk_name_cache.get(label)
-        if (cached is not None and cached["ver"] == version
-                and count < cached["count"] * 2):
-            return cached["name"]
-
+        duration_sec = cluster.duration_sec_of(label)
+        if duration_sec < cfg.SPEAKER_IDENTIFY_MIN_SEC:
+            return None
         centroid = cluster.centroid_of(label)
         if centroid is None:
-            return cached["name"] if cached else None
+            return None
         try:
-            name = await self._in_speaker_thread(
-                _map_speaker_name,
+            match = await self._in_speaker_thread(
+                _map_speaker_identity,
                 service,
                 label,
                 centroid,
+                duration_sec,
                 self._spk_id_threshold,
                 self._spk_id_margin,
             )
@@ -377,12 +388,7 @@ class VllmStreamSession:
             return None
         if generation != self._generation or cluster is not self._spk_cluster:
             return None
-        self._spk_name_cache[label] = {
-            "name": name,
-            "count": count,
-            "ver": version,
-        }
-        return name
+        return self._spk_identity_tracker.observe(label, match)
 
     async def _annotate_final(self, msg, embedded, generation):
         if msg is None or generation != self._generation:
@@ -580,7 +586,7 @@ class VllmStreamSession:
         self._generation += 1
         self._clear_state(discard_segment=True)
         self._spk_cluster = None
-        self._spk_name_cache = {}
+        self._spk_identity_tracker.clear()
 
 
 class VllmStreamBackend:

@@ -50,11 +50,13 @@ LEGACY_DEFAULTS = {
     "speaker_max_windows": 4000,
     # ── V 系列（声纹库）新增，非重构前遗留 ──
     "enable_speaker_db": False,
-    "speaker_db_path": "data/speakers.db",
+    "speaker_database_url": "",
     "speaker_id_threshold": 0.45,
     "speaker_id_margin": 0.10,
+    "speaker_identify_min_sec": 5.0,
+    "speaker_realtime_confirmations": 2,
     "speaker_enroll_min_sec": 3.0,
-    "speaker_auto_enroll": True,
+    "speaker_auto_enroll": False,
     "speaker_auto_enroll_min_sec": 10.0,
     "speaker_store_audio": False,
     # ── 兼容接口（/compat/*）新增，非重构前遗留 ──

@@ -21,6 +21,7 @@ from app.utils.audio_resampler import pcm_bytes_to_array, resample_to_16k
 from app.utils.result_parser import extract_text, extract_words
 from app.engines.streaming_vad_engine import StreamingVADEngine
 from app.runtime.speaker_cluster import OnlineSpeakerClusterer
+from app.runtime.speaker_identity import RealtimeIdentityTracker
 from app.runtime.noise_gate import NoiseFloorTracker, rms_dbfs, should_gate
 from app.utils.validation import (
     coerce_num_in_range, parse_bool,
@@ -109,7 +110,9 @@ class StreamSession:
         self._speaker = speaker                  # None = 说话人分离关闭
         self._spk_cluster = None                 # configure() 时重建（会话域）
         self._speaker_service = speaker_service  # None = 声纹库未启用
-        self._spk_name_cache = {}                # label -> {"name", "count", "ver"}（会话级簇缓存）
+        self._spk_identity_tracker = RealtimeIdentityTracker(
+            cfg.SPEAKER_REALTIME_CONFIRMATIONS
+        )
         self._noise_filter = noise_filter        # 段级远场/环境音门控开关（opt-in）
         self._energy_floor_dbfs = energy_floor_dbfs
         self._snr_min_db = snr_min_db
@@ -172,7 +175,9 @@ class StreamSession:
             )
         else:
             self._spk_cluster = None
-        self._spk_name_cache = {}
+        self._spk_identity_tracker = RealtimeIdentityTracker(
+            cfg.SPEAKER_REALTIME_CONFIRMATIONS
+        )
         self._noise_tracker = NoiseFloorTracker() if self._noise_filter else None
         self._warnings = self._collect_ignored_params(cfg_msg)
         logger.info(f"[stream] 会话配置 sid={self.sid[:8]} audio_fs={self.audio_fs} "
@@ -412,31 +417,21 @@ class StreamSession:
         yield msg
 
     def _lookup_speaker_name(self, spk: str) -> str | None:
-        """会话级簇缓存的声纹查询（同步，线程池内执行）。
-
-        缓存失效（满足任一即重查）：
-        ① 簇质心累计段数达上次查询的 2 倍——早期 unknown 随质心稳定升级命中；
-        ② 声纹库 cache_version 变化——外部登记/改名/删除即时可见。
-        均不回改历史 final。
-        """
+        """查询共享声纹库并执行会话级连续命中确认。"""
         cluster = self._spk_cluster      # 本地引用：release() 并发置 None 防护
         if cluster is None:
             return None
-        ver = self._speaker_service.store.cache_version
-        count = max(cluster.count_of(spk), 1)
-        cached = self._spk_name_cache.get(spk)
-        if (cached is not None and cached["ver"] == ver
-                and count < cached["count"] * 2):
-            return cached["name"]
+        duration_sec = cluster.duration_sec_of(spk)
+        if duration_sec < cfg.SPEAKER_IDENTIFY_MIN_SEC:
+            return None
         centroid = cluster.centroid_of(spk)
         if centroid is None:
-            return cached["name"] if cached else None
+            return None
         mapping = self._speaker_service.map_clusters(
-            [{"label": spk, "centroid": centroid}],
+            [{"label": spk, "centroid": centroid, "dur_sec": duration_sec}],
             id_threshold=self._spk_id_threshold, id_margin=self._spk_id_margin)
-        name = mapping[0]["name"] if mapping else None
-        self._spk_name_cache[spk] = {"name": name, "count": count, "ver": ver}
-        return name
+        match = mapping[0] if mapping and mapping[0].get("speaker_id") else None
+        return self._spk_identity_tracker.observe(spk, match)
 
 
 class VadOfflineBackend:
@@ -505,7 +500,7 @@ class VadOfflineBackend:
                 session.buffer = None
                 session.vad_cache = None
                 session._spk_cluster = None    # 会话域语义：质心状态随会话释放
-                session._spk_name_cache = {}   # 声纹簇缓存同步清空
+                session._spk_identity_tracker.clear()
                 session._noise_tracker = None  # 噪声底估计随会话释放
         finally:
             with self._count_lock:

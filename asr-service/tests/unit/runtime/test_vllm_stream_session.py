@@ -160,18 +160,12 @@ class _BoomSpeakerEngine:
         raise RuntimeError("speaker boom")
 
 
-class _FakeSpeakerStore:
-    def __init__(self):
-        self.cache_version = 0
-
-
 class _FakeSpeakerService:
     """按调用顺序返回名字；None 表示本次未命中。"""
 
     def __init__(self, names=("张三",)):
         self.names = list(names)
         self.calls = 0
-        self.store = _FakeSpeakerStore()
 
     def map_clusters(self, clusters, *, id_threshold=None, id_margin=None):
         index = min(self.calls, len(self.names) - 1)
@@ -746,7 +740,7 @@ def test_hard_cut_keeps_exact_audio_snapshot():
         backend.shutdown()
 
 
-def test_final_carries_speaker_name_and_uses_cluster_cache():
+def test_final_carries_speaker_name_after_duration_and_confirmation_gates():
     speaker = _FakeSpeakerEngine()
     service = _FakeSpeakerService()
     backend, sess = _make_session(
@@ -759,7 +753,7 @@ def test_final_carries_speaker_name_and_uses_cluster_cache():
 
     async def run():
         finals = []
-        for _ in range(3):
+        for _ in range(4):
             finals += [
                 msg for msg in await _feed_sentence(sess)
                 if msg["type"] == "final"
@@ -768,14 +762,15 @@ def test_final_carries_speaker_name_and_uses_cluster_cache():
 
     try:
         finals = asyncio.run(run())
-        assert [msg["speaker_name"] for msg in finals] == ["张三", "张三", "张三"]
-        assert service.calls == 2              # count=1、2 查询；count=3 命中缓存
+        assert all("speaker_name" not in msg for msg in finals[:3])
+        assert finals[3]["speaker_name"] == "张三"
+        assert service.calls == 2
     finally:
         backend.shutdown()
 
 
 def test_unknown_speaker_can_match_after_centroid_stabilizes():
-    service = _FakeSpeakerService(names=(None, "张三"))
+    service = _FakeSpeakerService(names=(None, "张三", "张三"))
     backend, sess = _make_session(
         _SilenceAwareMockEngine(),
         speaker=_FakeSpeakerEngine(),
@@ -785,23 +780,24 @@ def test_unknown_speaker_can_match_after_centroid_stabilizes():
     sess.configure({"identify_speakers": True})
 
     async def run():
-        first = await _feed_sentence(sess)
-        second = await _feed_sentence(sess)
-        return (
-            next(msg for msg in first if msg["type"] == "final"),
-            next(msg for msg in second if msg["type"] == "final"),
-        )
+        finals = []
+        for _ in range(5):
+            finals.extend(
+                msg for msg in await _feed_sentence(sess)
+                if msg["type"] == "final"
+            )
+        return finals
 
     try:
-        first, second = asyncio.run(run())
-        assert first["speaker"] == "A" and "speaker_name" not in first
-        assert second["speaker_name"] == "张三"
+        finals = asyncio.run(run())
+        assert all("speaker_name" not in msg for msg in finals[:4])
+        assert finals[4]["speaker_name"] == "张三"
     finally:
         backend.shutdown()
 
 
-def test_speaker_name_cache_refreshes_after_store_change():
-    service = _FakeSpeakerService(names=(None, None, "张三"))
+def test_shared_store_is_queried_and_two_unknowns_revoke_name():
+    service = _FakeSpeakerService(names=("张三", "张三", None, None))
     backend, sess = _make_session(
         _SilenceAwareMockEngine(),
         speaker=_FakeSpeakerEngine(),
@@ -811,28 +807,28 @@ def test_speaker_name_cache_refreshes_after_store_change():
     sess.configure({"identify_speakers": True})
 
     async def run():
-        await _feed_sentence(sess)             # count=1，查询
-        await _feed_sentence(sess)             # count=2，翻倍重查
-        service.store.cache_version += 1
-        return await _feed_sentence(sess)      # count=3，本应缓存；版本变化触发重查
+        finals = []
+        for _ in range(6):
+            finals.extend(
+                msg for msg in await _feed_sentence(sess)
+                if msg["type"] == "final"
+            )
+        return finals
 
     try:
-        messages = asyncio.run(run())
-        final = next(msg for msg in messages if msg["type"] == "final")
-        assert service.calls == 3
-        assert final["speaker_name"] == "张三"
+        finals = asyncio.run(run())
+        assert service.calls == 4
+        assert finals[3]["speaker_name"] == "张三"
+        assert finals[4]["speaker_name"] == "张三"
+        assert "speaker_name" not in finals[5]
     finally:
         backend.shutdown()
 
 
 def test_speaker_service_failure_keeps_anonymous_label():
-    class BrokenStore:
-        @property
-        def cache_version(self):
-            raise RuntimeError("store closed")
-
     class BrokenService:
-        store = BrokenStore()
+        def map_clusters(self, *args, **kwargs):
+            raise RuntimeError("store closed")
 
     backend, sess = _make_session(
         _SilenceAwareMockEngine(),

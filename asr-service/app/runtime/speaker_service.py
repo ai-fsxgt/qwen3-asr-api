@@ -21,7 +21,11 @@ import app.config as cfg
 from app.engines.speaker_embedding_engine import make_windows
 from app.pipeline.audio_preprocessor import convert_to_wav
 from app.runtime.speaker_cluster import cluster_offline
-from app.runtime.speaker_store import SpeakerStore, SpeakerStoreError
+from app.runtime.speaker_store import (
+    SpeakerIdentification,
+    SpeakerStore,
+    SpeakerStoreError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +43,14 @@ class SpeakerService:
 
     # ─── 内部：单文件 → 模板向量 ───
 
-    def _embed_file(self, file_path: str, *, keep_wav: bool = False,
-                    purpose: str = "登记") -> tuple[np.ndarray, float, str | None]:
+    def _embed_file(
+        self,
+        file_path: str,
+        *,
+        keep_wav: bool = False,
+        purpose: str = "登记",
+        min_sec: float | None = None,
+    ) -> tuple[np.ndarray, float, str | None]:
         """转换 → VAD → 时长门槛 → 单人校验 → 窗均值模板。
 
         返回 (L2 归一模板向量, 有效语音秒数, 留存的 wav 路径或 None)。
@@ -53,9 +63,12 @@ class SpeakerService:
             convert_to_wav(file_path, wav_path)
             segments = self._vad.detect(wav_path)
             dur = sum(e - s for s, e in segments) / 1000.0
-            if dur < cfg.SPEAKER_ENROLL_MIN_SEC:
+            required_sec = (
+                cfg.SPEAKER_ENROLL_MIN_SEC if min_sec is None else min_sec
+            )
+            if dur < required_sec:
                 raise ValueError(
-                    f"{purpose}样本有效语音不足（{dur:.1f}s < {cfg.SPEAKER_ENROLL_MIN_SEC}s），"
+                    f"{purpose}样本有效语音不足（{dur:.1f}s < {required_sec}s），"
                     "请提供更长的清晰人声"
                 )
             wav, _sr = sf.read(wav_path, dtype="float32")
@@ -274,16 +287,34 @@ class SpeakerService:
 
     def identify_file(self, file_path: str) -> dict:
         """单文件 1:N 识别。"""
-        vec, dur, _ = self._embed_file(file_path, keep_wav=False, purpose="识别")
-        hit = self.store.identify(vec, threshold=cfg.SPEAKER_ID_THRESHOLD,
-                                  margin=cfg.SPEAKER_ID_MARGIN,
-                                  include_source=True)
-        self.store.audit("identify", hit["speaker_id"] if hit else None,
-                         {"matched": hit is not None,
-                          "score": hit["score"] if hit else None, "via": "file"})
+        vec, dur, _ = self._embed_file(
+            file_path,
+            keep_wav=False,
+            purpose="识别",
+            min_sec=cfg.SPEAKER_IDENTIFY_MIN_SEC,
+        )
+        decision = self.store.identify_detailed(
+            vec,
+            threshold=cfg.SPEAKER_ID_THRESHOLD,
+            margin=cfg.SPEAKER_ID_MARGIN,
+        )
+        self._audit_identification(decision, via="file", duration_sec=dur)
+        hit = decision.as_match(include_source=True)
         if hit is None:
-            return {"matched": False}
-        return {"matched": True, **hit}
+            return {
+                "matched": False,
+                "reason": decision.reason,
+                "score": decision.top1_score,
+                "top2_score": decision.top2_score,
+                "margin": decision.margin,
+            }
+        return {
+            "matched": True,
+            **hit,
+            "reason": decision.reason,
+            "top2_score": decision.top2_score,
+            "margin": decision.margin,
+        }
 
     # ─── 转写联动路径（永不抛错，失败退回匿名）───
 
@@ -291,12 +322,74 @@ class SpeakerService:
     def _anon(label: str) -> dict:
         return {"label": label, "speaker_id": None, "name": None, "score": None}
 
+    def _audit_identification(
+        self,
+        decision: SpeakerIdentification,
+        *,
+        via: str,
+        duration_sec: float,
+        label: str | None = None,
+        threshold: float | None = None,
+        required_margin: float | None = None,
+    ) -> None:
+        self.store.audit(
+            "identify",
+            decision.speaker_id if decision.matched else None,
+            {
+                "matched": decision.matched,
+                "reason": decision.reason,
+                "top1_score": decision.top1_score,
+                "top2_score": decision.top2_score,
+                "margin": decision.margin,
+                "threshold": (
+                    cfg.SPEAKER_ID_THRESHOLD if threshold is None else threshold
+                ),
+                "required_margin": (
+                    cfg.SPEAKER_ID_MARGIN
+                    if required_margin is None
+                    else required_margin
+                ),
+                "duration_sec": duration_sec,
+                "label": label,
+                "via": via,
+            },
+        )
+
+    def _identify_cluster(
+        self,
+        cluster: dict,
+        *,
+        threshold: float,
+        margin: float,
+        via: str,
+    ) -> dict | None:
+        label = cluster.get("label", "?")
+        duration_sec = float(cluster.get("dur_sec") or 0.0)
+        if duration_sec < cfg.SPEAKER_IDENTIFY_MIN_SEC:
+            decision = SpeakerIdentification(False, "insufficient_duration")
+        else:
+            decision = self.store.identify_detailed(
+                cluster["centroid"],
+                threshold=threshold,
+                margin=margin,
+            )
+        self._audit_identification(
+            decision,
+            via=via,
+            duration_sec=duration_sec,
+            label=label,
+            threshold=threshold,
+            required_margin=margin,
+        )
+        return decision.as_match()
+
     def map_clusters(self, clusters: list[dict], *,
                      id_threshold: float | None = None,
                      id_margin: float | None = None) -> list[dict]:
         """实时联动入口（仅识别，不自动登记）。
 
-        clusters = [{"label", "centroid"}]；返回每簇 {"label","speaker_id","name","score"}，
+        clusters = [{"label", "centroid", "dur_sec"}]；返回每簇
+        {"label","speaker_id","name","score"}，
         未命中/任何异常 → 该簇 speaker_id/name=None（识别失败永远优雅退回匿名）。
         id_threshold/id_margin 缺省=服务端 cfg（支持按会话覆盖）。
         """
@@ -306,11 +399,12 @@ class SpeakerService:
         for c in clusters:
             label = c.get("label", "?")
             try:
-                hit = self.store.identify(c["centroid"], threshold=thr, margin=mgn)
-                self.store.audit("identify", hit["speaker_id"] if hit else None,
-                                 {"matched": hit is not None,
-                                  "score": hit["score"] if hit else None,
-                                  "label": label, "via": "stream"})
+                hit = self._identify_cluster(
+                    c,
+                    threshold=thr,
+                    margin=mgn,
+                    via="stream",
+                )
                 out.append({"label": label, **hit} if hit else self._anon(label))
             except Exception as e:
                 logger.warning(f"簇识别失败，退回匿名: {e}")
@@ -342,8 +436,11 @@ class SpeakerService:
                 with self._speaker_data_lock:
                     if cancelled and cancelled():
                         break
-                    hit = self.store.identify(
-                        c["centroid"], threshold=thr, margin=mgn
+                    hit = self._identify_cluster(
+                        c,
+                        threshold=thr,
+                        margin=mgn,
+                        via="offline",
                     )
                     if cancelled and cancelled():
                         break
@@ -377,10 +474,6 @@ class SpeakerService:
                             }
                         else:
                             mapping = self._anon(label)
-                self.store.audit("identify", hit["speaker_id"] if hit else None,
-                                 {"matched": hit is not None,
-                                  "score": hit["score"] if hit else None,
-                                  "label": label, "via": "offline"})
                 out.append(mapping)
             except Exception as e:
                 logger.warning(f"簇识别/自动登记失败，退回匿名: {e}")

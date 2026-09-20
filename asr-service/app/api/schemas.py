@@ -81,6 +81,9 @@ class IdentifyResponse(BaseModel):
     name: str | None = None
     source: str | None = None
     score: float | None = None
+    top2_score: float | None = None
+    margin: float | None = None
+    reason: str | None = None
 
 
 class SpeakerClaimResponse(BaseModel):
@@ -143,6 +146,7 @@ class HealthResponse(BaseModel):
     punc_enabled: bool = False
     speaker_enabled: bool = False
     speaker_db_enabled: bool = False
+    speaker_db_backend: str | None = None  # 当前仅 "pgvector"
     asr_backend: str | None = None     # "qwen_asr" | "openvino"
     vad_backend: str | None = None     # "pytorch" | "onnx"
     punc_backend: str | None = None    # "pytorch" | "onnx"

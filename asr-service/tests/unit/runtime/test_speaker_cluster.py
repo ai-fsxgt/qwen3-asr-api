@@ -80,13 +80,22 @@ def test_online_short_segment_attaches_without_update():
     assert len(oc.centroids) == 1
 
 
-def test_online_max_speakers_assigns_nearest():
+def test_online_max_speakers_keeps_low_confidence_segment_anonymous():
     oc = OnlineSpeakerClusterer(threshold=0.5, max_speakers=2)
     oc.assign(unit(0), 3000)
     oc.assign(unit(1), 3000)
     label = oc.assign(mix(unit(0), unit(2), 0.4, 0.9), 3000)  # 与 A 最近但低于 τ
-    assert label == "A"
+    assert label is None
     assert len(oc.centroids) == 2  # 不再建簇
+
+
+def test_online_centroid_is_weighted_by_segment_duration():
+    oc = OnlineSpeakerClusterer(threshold=0.0, max_speakers=2)
+    oc.assign(unit(0), 6000)
+    oc.assign(unit(1), 2000)
+    expected = mix(unit(0), unit(1), 6.0, 2.0)
+    assert np.allclose(oc.centroid_of("A"), expected)
+    assert oc.duration_sec_of("A") == pytest.approx(8.0)
 
 
 def test_online_centroid_of_unknown_label():

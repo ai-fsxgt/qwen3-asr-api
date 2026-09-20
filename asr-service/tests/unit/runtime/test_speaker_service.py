@@ -9,6 +9,7 @@ import threading
 import types
 
 import numpy as np
+import psycopg
 import pytest
 
 import app.config as cfg
@@ -17,6 +18,12 @@ from app.runtime.speaker_store import SpeakerClaimConflictError, SpeakerStore
 
 DIM = 192
 TAG = "campplus_cn_common@v1"
+DATABASE_URL = os.environ.get("TEST_SPEAKER_DATABASE_URL")
+
+pytestmark = pytest.mark.skipif(
+    not DATABASE_URL,
+    reason="未配置 TEST_SPEAKER_DATABASE_URL",
+)
 
 
 def unit(i: int) -> np.ndarray:
@@ -57,8 +64,14 @@ def env(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def store(tmp_path):
-    s = SpeakerStore(str(tmp_path / "speakers.db"), model_tag=TAG)
+def store():
+    s = SpeakerStore(DATABASE_URL, model_tag=TAG)
+    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
+        conn.execute(
+            "TRUNCATE speaker_audit_log, speaker_claims, "
+            "speaker_templates, speakers RESTART IDENTITY CASCADE"
+        )
+        conn.execute("DELETE FROM speaker_meta WHERE key='auto_name_seq'")
     yield s
     s.close()
 
@@ -313,7 +326,9 @@ def test_identify_file_hit_and_miss(env, store):
     assert hit["source"] == "manual"
 
     svc_other = make_service(store, engine=FakeEngine(vec_idx=5))
-    assert svc_other.identify_file(_src(env, "q2.mp3")) == {"matched": False}
+    miss = svc_other.identify_file(_src(env, "q2.mp3"))
+    assert miss["matched"] is False
+    assert miss["reason"] == "below_threshold"
 
 
 def test_identify_file_returns_auto_source(env, store):
@@ -332,8 +347,8 @@ def test_map_clusters_hit_and_miss(env, store):
     svc = make_service(store)
     sid = svc.enroll("张三", None, [_src(env)], consent=True)["speaker_id"]
     out = svc.map_clusters([
-        {"label": "A", "centroid": unit(0)},
-        {"label": "B", "centroid": unit(7)},
+        {"label": "A", "centroid": unit(0), "dur_sec": 6.0},
+        {"label": "B", "centroid": unit(7), "dur_sec": 6.0},
     ])
     assert out[0]["speaker_id"] == sid and out[0]["name"] == "张三"
     assert out[1] == {"label": "B", "speaker_id": None, "name": None, "score": None}
@@ -357,14 +372,16 @@ def _cluster(label, vec, dur):
     return {"label": label, "centroid": vec, "dur_sec": dur}
 
 
-def test_auto_enroll_above_threshold(env, store):
+def test_auto_enroll_above_threshold(env, store, monkeypatch):
+    monkeypatch.setattr(cfg, "SPEAKER_AUTO_ENROLL", True)
     svc = make_service(store)
     out = svc.map_and_enroll_clusters([_cluster("A", unit(0), 12.0)])
     assert out[0]["name"] == "说话人_01" and out[0]["auto_enrolled"] is True
     assert store.get_speaker(out[0]["speaker_id"])["source"] == "auto"
 
 
-def test_auto_enroll_sequence_increments(env, store):
+def test_auto_enroll_sequence_increments(env, store, monkeypatch):
+    monkeypatch.setattr(cfg, "SPEAKER_AUTO_ENROLL", True)
     svc = make_service(store)
     out = svc.map_and_enroll_clusters([
         _cluster("A", unit(0), 12.0), _cluster("B", unit(1), 15.0),
@@ -372,7 +389,8 @@ def test_auto_enroll_sequence_increments(env, store):
     assert [m["name"] for m in out] == ["说话人_01", "说话人_02"]
 
 
-def test_auto_enroll_below_duration_stays_anonymous(env, store):
+def test_auto_enroll_below_duration_stays_anonymous(env, store, monkeypatch):
+    monkeypatch.setattr(cfg, "SPEAKER_AUTO_ENROLL", True)
     svc = make_service(store)
     out = svc.map_and_enroll_clusters([_cluster("A", unit(0), 5.0)])  # <10s
     assert out[0]["speaker_id"] is None
@@ -395,11 +413,23 @@ def test_auto_enroll_hit_does_not_re_enroll(env, store):
     assert store.speaker_count == 1                      # 命中不重复建档（防投毒）
 
 
+def test_offline_short_cluster_stays_anonymous_even_when_voiceprint_matches(
+    env, store
+):
+    svc = make_service(store)
+    svc.enroll("张三", None, [_src(env)], consent=True)
+    out = svc.map_and_enroll_clusters([_cluster("A", unit(0), 4.0)])
+    assert out == [
+        {"label": "A", "speaker_id": None, "name": None, "score": None}
+    ]
+
+
 def test_auto_enroll_serializes_identify_and_enroll(
     env, store, monkeypatch
 ):
+    monkeypatch.setattr(cfg, "SPEAKER_AUTO_ENROLL", True)
     svc = make_service(store)
-    original_identify = store.identify
+    original_identify = store.identify_detailed
     first_identify_entered = threading.Event()
     second_identify_entered = threading.Event()
     second_worker_started = threading.Event()
@@ -429,7 +459,7 @@ def test_auto_enroll_serializes_identify_and_enroll(
             [_cluster(label, unit(0), 12.0)]
         )[0]
 
-    monkeypatch.setattr(store, "identify", blocking_identify)
+    monkeypatch.setattr(store, "identify_detailed", blocking_identify)
     first_thread = threading.Thread(target=run, args=("A",))
     second_thread = threading.Thread(target=run, args=("B",))
     first_thread.start()
@@ -450,7 +480,8 @@ def test_auto_enroll_serializes_identify_and_enroll(
     assert sum("auto_enrolled" in result for result in results.values()) == 1
 
 
-def test_auto_enroll_failure_falls_back_anonymous(env, store):
+def test_auto_enroll_failure_falls_back_anonymous(env, store, monkeypatch):
+    monkeypatch.setattr(cfg, "SPEAKER_AUTO_ENROLL", True)
     svc = make_service(store)
     store.close()                                        # alloc/enroll 将失败
     out = svc.map_and_enroll_clusters([_cluster("A", unit(0), 12.0)])
@@ -458,9 +489,10 @@ def test_auto_enroll_failure_falls_back_anonymous(env, store):
 
 
 def test_auto_enroll_stops_when_cancelled_after_identify(env, store, monkeypatch):
+    monkeypatch.setattr(cfg, "SPEAKER_AUTO_ENROLL", True)
     svc = make_service(store)
     cancelled = False
-    identify = store.identify
+    identify = store.identify_detailed
 
     def identify_then_cancel(*args, **kwargs):
         nonlocal cancelled
@@ -468,7 +500,7 @@ def test_auto_enroll_stops_when_cancelled_after_identify(env, store, monkeypatch
         cancelled = True
         return result
 
-    monkeypatch.setattr(store, "identify", identify_then_cancel)
+    monkeypatch.setattr(store, "identify_detailed", identify_then_cancel)
     out = svc.map_and_enroll_clusters(
         [_cluster("A", unit(0), 12.0)],
         cancelled=lambda: cancelled,

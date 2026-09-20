@@ -498,20 +498,12 @@ def test_backend_speaker_capability_and_release():
 
 # ─── 声纹识别联动（fake SpeakerService）───
 
-class FakeSpeakerStore:
-    """仅提供缓存失效信号（真 store 的 cache_version 语义：写后自增）。"""
-
-    def __init__(self):
-        self.cache_version = 0
-
-
 class FakeSpeakerService:
     """按调用序号返回脚本化识别结果（None=unknown）。"""
 
     def __init__(self, names=("张三",)):
         self.names = list(names)
         self.calls = 0
-        self.store = FakeSpeakerStore()
 
     def map_clusters(self, clusters, *, id_threshold=None, id_margin=None):
         name = self.names[self.calls] if self.calls < len(self.names) else self.names[-1]
@@ -528,6 +520,8 @@ def _three_finals_svad():
         0: [{"type": "complete", "start": 0, "end": 3000}],
         1: [{"type": "complete", "start": 3000, "end": 6000}],
         2: [{"type": "complete", "start": 6000, "end": 9000}],
+        3: [{"type": "complete", "start": 9000, "end": 12000}],
+        4: [{"type": "complete", "start": 12000, "end": 15000}],
     })
 
 
@@ -536,54 +530,62 @@ async def test_final_carries_speaker_name():
     s, asr, ex = _make_session(_three_finals_svad(), speaker=FakeSpeakerEngine(),
                                speaker_service=service, identify=True)
     try:
-        msgs = await _collect(s.feed_audio(_pcm_ms(3000)))
-        assert msgs[0]["speaker"] == "A"
-        assert msgs[0]["speaker_name"] == "张三"
+        finals = []
+        for _ in range(3):
+            finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
+        assert [msg["speaker"] for msg in finals] == ["A", "A", "A"]
+        assert "speaker_name" not in finals[0]
+        assert "speaker_name" not in finals[1]
+        assert finals[2]["speaker_name"] == "张三"
     finally:
         ex.shutdown(wait=False)
 
 
-async def test_cluster_cache_avoids_requery():
-    """缓存失效=计数翻倍：同簇 3 个 final 只查 2 次（count 1→查，2≥2×1→查，3<4→缓存）。"""
+async def test_shared_store_is_queried_for_every_eligible_segment():
+    """累计 5 秒后每段直查共享库，不保留数据库内容缓存。"""
     service = FakeSpeakerService()
     s, asr, ex = _make_session(_three_finals_svad(), speaker=FakeSpeakerEngine(),
                                speaker_service=service, identify=True)
     try:
-        for _ in range(3):
-            msgs = await _collect(s.feed_audio(_pcm_ms(3000)))
-            assert msgs[0]["speaker_name"] == "张三"
-        assert service.calls == 2
+        finals = []
+        for _ in range(4):
+            finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
+        assert service.calls == 3
+        assert "speaker_name" not in finals[0]
+        assert "speaker_name" not in finals[1]
+        assert finals[2]["speaker_name"] == "张三"
+        assert finals[3]["speaker_name"] == "张三"
     finally:
         ex.shutdown(wait=False)
 
 
 async def test_unknown_then_hit_progression():
     """早期 unknown → 质心稳定后命中（以最新 final 为准，不回改历史）。"""
-    service = FakeSpeakerService(names=(None, "张三"))
+    service = FakeSpeakerService(names=(None, "张三", "张三"))
     s, asr, ex = _make_session(_three_finals_svad(), speaker=FakeSpeakerEngine(),
                                speaker_service=service, identify=True)
     try:
-        m0 = await _collect(s.feed_audio(_pcm_ms(3000)))
-        assert "speaker_name" not in m0[0]               # 首查 unknown
-        m1 = await _collect(s.feed_audio(_pcm_ms(3000)))
-        assert m1[0]["speaker_name"] == "张三"           # 计数翻倍重查命中
+        finals = []
+        for _ in range(4):
+            finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
+        assert all("speaker_name" not in msg for msg in finals[:3])
+        assert finals[3]["speaker_name"] == "张三"
     finally:
         ex.shutdown(wait=False)
 
 
-async def test_cache_busts_on_store_version_change():
-    """声纹库 cache_version 变化即时失效会话缓存——外部登记/改名无需等计数翻倍。"""
-    service = FakeSpeakerService(names=(None, None, "张三"))
+async def test_two_unknown_results_revoke_confirmed_name():
+    service = FakeSpeakerService(names=("张三", "张三", None, None))
     s, asr, ex = _make_session(_three_finals_svad(), speaker=FakeSpeakerEngine(),
                                speaker_service=service, identify=True)
     try:
-        await _collect(s.feed_audio(_pcm_ms(3000)))      # count=1 查（unknown）
-        await _collect(s.feed_audio(_pcm_ms(3000)))      # count=2≥2×1 翻倍重查（unknown）
-        assert service.calls == 2
-        service.store.cache_version += 1                 # 模拟外部登记入库
-        m = await _collect(s.feed_audio(_pcm_ms(3000)))  # count=3<4，本应走缓存
-        assert service.calls == 3                        # ver 变化触发重查
-        assert m[0]["speaker_name"] == "张三"
+        finals = []
+        for _ in range(5):
+            finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
+        assert service.calls == 4
+        assert finals[2]["speaker_name"] == "张三"
+        assert finals[3]["speaker_name"] == "张三"
+        assert "speaker_name" not in finals[4]
     finally:
         ex.shutdown(wait=False)
 
@@ -613,8 +615,6 @@ async def test_identify_without_service_no_name():
 
 async def test_identify_service_error_degrades():
     class BoomService:
-        store = FakeSpeakerStore()
-
         def map_clusters(self, clusters, *, id_threshold=None, id_margin=None):
             raise RuntimeError("db boom")
 

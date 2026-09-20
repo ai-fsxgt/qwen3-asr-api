@@ -15,6 +15,7 @@ def service_root(tmp_path, monkeypatch):
     monkeypatch.setattr(cf, "SERVICE_ROOT", str(tmp_path))
     monkeypatch.delenv("MODEL_SOURCE", raising=False)
     monkeypatch.delenv("ASR_API_KEY", raising=False)
+    monkeypatch.delenv("SPEAKER_DATABASE_URL", raising=False)
     saved = cfg.CONFIG_FILE
     yield tmp_path
     cfg.CONFIG_FILE = saved
@@ -191,9 +192,16 @@ def test_merge_defaults_only(service_root):
 def test_merge_env_over_defaults(service_root, monkeypatch):
     monkeypatch.setenv("MODEL_SOURCE", "huggingface")
     monkeypatch.setenv("ASR_API_KEY", "env-secret")
+    monkeypatch.setenv(
+        "SPEAKER_DATABASE_URL",
+        "postgresql://asr:secret@database:5432/qwen3_asr",
+    )
     merged = cf.merge_runtime_config(_ns(no_config=True))
     assert merged.model_source == "huggingface"
     assert merged.api_key == "env-secret"
+    assert merged.speaker_database_url == (
+        "postgresql://asr:secret@database:5432/qwen3_asr"
+    )
 
 
 def test_merge_file_over_env(service_root, monkeypatch):
