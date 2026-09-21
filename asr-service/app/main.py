@@ -419,6 +419,8 @@ def _assemble_standard(app: FastAPI, args) -> None:
             except Exception as e:                       # ④ 建库失败
                 logger.error(f"声纹库初始化失败，已降级关闭: {e}")
                 speaker_service = None
+                if speaker_store is not None:
+                    speaker_store.close()
                 speaker_store = None
     speaker_db_enabled = speaker_service is not None and not speaker_tag_mismatch
     # 转写联动仅在识别可用时注入（失配 = 库内模板与当前引擎不可比，联动同样禁用）
@@ -760,6 +762,8 @@ def _assemble_vllm(app: FastAPI, args) -> None:
             except Exception as e:                       # ④ 建库失败
                 logger.error(f"声纹库初始化失败，已降级关闭: {e}")
                 speaker_service = None
+                if speaker_store is not None:
+                    speaker_store.close()
                 speaker_store = None
     speaker_db_enabled = speaker_service is not None and not speaker_tag_mismatch
     # 转写联动仅在识别可用时注入（失配 = 库内模板与当前引擎不可比，联动同样禁用）
