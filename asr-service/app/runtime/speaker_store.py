@@ -939,7 +939,8 @@ class SpeakerStore:
         *,
         threshold: float,
         margin: float,
-    ) -> SpeakerAutoEnrollment:
+        cancelled=None,
+    ) -> SpeakerAutoEnrollment | None:
         """跨实例串行执行二次识别，仍未命中时原子自动登记。"""
         vector = self._validate_vector(emb)
         duration = self._validate_durations([dur_sec])[0]
@@ -950,6 +951,8 @@ class SpeakerStore:
                         "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                         (self._AUTO_ENROLL_LOCK,),
                     )
+                    if cancelled and cancelled():
+                        return None
                     identification = self._identify_with_connection(
                         conn,
                         vector,
@@ -978,6 +981,8 @@ class SpeakerStore:
                             created=False,
                         )
                     else:
+                        if cancelled and cancelled():
+                            return None
                         name = self._allocate_auto_name(conn)
                         speaker_id = self._insert_speaker(
                             conn,
@@ -1047,10 +1052,12 @@ class SpeakerStore:
     def health(self) -> dict:
         try:
             with self._connection() as conn:
-                row = conn.execute(
-                    "SELECT COUNT(*) AS count FROM speakers"
-                ).fetchone()
-                speaker_count = int(row["count"])
+                with conn.transaction():
+                    conn.execute("SET LOCAL statement_timeout = '1s'")
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS count FROM speakers"
+                    ).fetchone()
+                    speaker_count = int(row["count"])
         except Exception as exc:
             return {"healthy": False, "backend": "pgvector", "error": str(exc)}
         return {

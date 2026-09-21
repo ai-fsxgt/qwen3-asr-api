@@ -413,12 +413,19 @@ class SpeakerService:
             )
             return {"label": label, **hit}
 
+        auto_enroll_options = {
+            "threshold": threshold,
+            "margin": margin,
+        }
+        if cancelled is not None:
+            auto_enroll_options["cancelled"] = cancelled
         enrollment = self.store.identify_or_enroll_auto(
             cluster["centroid"],
             duration_sec,
-            threshold=threshold,
-            margin=margin,
+            **auto_enroll_options,
         )
+        if enrollment is None:
+            return None
         self._audit_identification(
             enrollment.identification,
             via="offline",
