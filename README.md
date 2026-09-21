@@ -2,9 +2,9 @@
 
 [中文](README_zh.md) | **English**
 
-A simple, fast and efficient speech recognition API service based on Qwen3-ASR. Out-of-the-box, with offline long-form and real-time streaming transcription in one, speaker diarization / voiceprint identification, and a feature-rich, polished Web UI. Cross-platform on Linux / macOS / Windows with Docker container deployment, and dual-mode inference on GPU (CUDA) and CPU (OpenVINO INT8).
+A simple, fast and efficient speech recognition API service based on Qwen3-ASR. Out-of-the-box, with offline long-form and real-time streaming transcription in one, speaker diarization / voiceprint identification, and a feature-rich, polished Web UI. Supports Linux and Docker container deployment, with dual-mode inference on GPU (CUDA) and CPU (OpenVINO INT8).
 
-一个基于 Qwen3-ASR 的简单、快速、高效的语音识别 API 服务。开箱即用，集离线长音频转写与实时流式转写于一体，支持说话人分离 / 声纹识别，并配备功能丰富、精致的 Web UI。跨平台支持 Linux / macOS / Windows 及 Docker 容器化部署，同时提供 GPU（CUDA）与 CPU（OpenVINO INT8）双模式推理。
+一个基于 Qwen3-ASR 的简单、快速、高效的语音识别 API 服务。开箱即用，集离线长音频转写与实时流式转写于一体，支持说话人分离 / 声纹识别，并配备功能丰富、精致的 Web UI。支持 Linux 与 Docker 容器化部署，同时提供 GPU（CUDA）与 CPU（OpenVINO INT8）双模式推理。
 
 ## Features
 
@@ -34,7 +34,7 @@ A simple, fast and efficient speech recognition API service based on Qwen3-ASR. 
 **Recommended**: run the interactive management script at the repo root (unified Docker / venv entry, guided install and start/stop):
 
 ```bash
-bash manage.sh          # Linux / macOS; on Windows run .\manage.ps1 in PowerShell
+bash manage.sh          # Linux
 ```
 
 > Or do it manually, step by step (in the app directory):
@@ -58,11 +58,11 @@ With Docker:
 ```bash
 docker run -d --gpus all -p 8765:8765 \
   -v ./asr-service/models:/app/models \
-  --name qwen3-asr-service \
-  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest --web
+  --name qwen3-asr-vllm \
+  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm --web
 ```
 
-> Windows deployment, CPU/ARM64 modes, docker-compose, LAN access, API authentication and more: see the [deployment guide](docs/deployment_EN.md).
+> Docker provides the vLLM GPU image only. See the [deployment guide](docs/deployment_EN.md) for local CPU mode, docker-compose, LAN access, and API authentication.
 
 ## Preview
 
@@ -74,7 +74,7 @@ docker run -d --gpus all -p 8765:8765 \
 
 | Document | Contents |
 |----------|----------|
-| [Deployment Guide](docs/deployment_EN.md) | System requirements, Linux / Windows / Docker deployment, operation modes, Web UI, graceful shutdown |
+| [Deployment Guide](docs/deployment_EN.md) | System requirements, Linux / Docker deployment, operation modes, Web UI, graceful shutdown |
 | [Configuration Reference](docs/configuration_EN.md) | Full startup-parameter table, config.yaml, environment variables, task persistence, built-in constants |
 | [vLLM vs Standard](docs/vllm-vs-standard_EN.md) | Feature differences of the vLLM engine vs the default standard mode (selection & upgrade guide) |
 | [API Reference v2 (default)](docs/api/v2_EN.md) | Offline batch processing, health / capabilities, real-time WebSocket protocol |

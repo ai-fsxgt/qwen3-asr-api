@@ -6,7 +6,6 @@
 
 - [系统要求](#系统要求)
 - [Linux 部署](#linux-部署)
-- [Windows 部署（Python Embeddable）](#windows-部署python-embeddable)
 - [启用 API 认证](#启用-api-认证)
 - [Docker 部署](#docker-部署)
 - [交互式管理脚本](#交互式管理脚本)
@@ -24,6 +23,7 @@
 - ffmpeg（必须）
 - NVIDIA GPU + CUDA 12.1+（GPU 模式需要）
 - OpenVINO >= 2024.0（CPU 模式需要，pip install 自动安装）
+- Docker Engine + Docker Compose V2（Docker 编排部署需要）
 
 ```bash
 # 安装 ffmpeg (Ubuntu/Debian)
@@ -92,24 +92,6 @@ bash start.sh --host 0.0.0.0 --port 9000
 
 > 启动参数也可以写进 `config.yaml` 统一管理（首次启动已自动生成），全部参数与优先级规则见 [配置文档](configuration.md)。
 
-## Windows 部署（Python Embeddable）
-
-Windows 可使用 Python Embeddable Package 实现独立便携部署：
-
-1. 下载 [Python 3.12 Embeddable Package](https://www.python.org/downloads/windows/) 放入 `bin/` 目录
-2. 下载 [ffmpeg](https://www.gyan.dev/ffmpeg/builds/) 并将 `ffmpeg.exe` 放入 `bin/` 目录
-3. 运行初始化脚本（PowerShell）：
-   ```powershell
-   cd asr-service
-   .\setup.ps1
-   ```
-4. 启动服务：
-   ```powershell
-   .\start.ps1 --device cuda --model-size 0.6b --host 0.0.0.0
-   ```
-
-> 💡 推荐使用 PowerShell 脚本（`.ps1`）。同名的 `.bat`（`setup.bat` / `start.bat`）仅作旧版 cmd 兼容保留，新环境下不保证可正常运行；如遇问题请改用 `.ps1`。首次运行若提示执行策略限制，可用 `powershell -ExecutionPolicy Bypass -File .\setup.ps1`。
-
 ## 启用 API 认证
 
 设置 API 密钥后，所有接口（除 `/health`、`/capabilities` 外）需要携带 Bearer Token：
@@ -132,49 +114,49 @@ bash start.sh
 ### 使用预构建镜像
 
 ```bash
-# 拉取镜像
-docker pull registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest
+# 拉取 vLLM 镜像
+docker pull registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm
 
-# 启动容器（GPU 模式）
+# 启动容器（vLLM，GPU 专用）
 docker run -d --gpus all \
   -p 8765:8765 \
   -v ./asr-service/models:/app/models \
   -v ./asr-service/logs:/app/logs \
   -v ./asr-service/data:/app/data \
-  --name qwen3-asr-service \
-  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest \
-  --model-size 0.6b --device auto --web
+  --name qwen3-asr-vllm \
+  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm \
+  --model-size 0.6b --web
 ```
 
-`/app/data` 存放任务持久化库 `tasks.db` 与实时录音；共享声纹存储在外部 PostgreSQL/pgvector 中。compose 已默认挂载本地数据目录。CPU / ARM64 镜像（`latest-cpu` / `latest-arm64`）与更多数据卷说明见 [Docker Hub 页面](https://hub.docker.com/r/lancelrq/qwen3-asr-service)。
+`/app/data` 存放任务持久化库 `tasks.db` 与实时录音；共享声纹存储在外部 PostgreSQL/pgvector 中。Compose 已默认挂载本地数据目录。
 
-### 使用 docker-compose
+### 使用 Docker Compose V2
 
 ```bash
-# 直接启动（使用 docker/docker-compose.yml 中的默认配置）
+# 启动 vLLM 服务
+[ -f asr-service/config.yaml ] || cp asr-service/config.example.yaml asr-service/config.yaml
 docker compose -f docker/docker-compose.yml up -d
 
 # 停止
 docker compose -f docker/docker-compose.yml down
 ```
 
-`docker/docker-compose.yml` 中可配置启动参数、API 密钥、端口映射等，详见文件内注释。CPU 版编排见 `docker/docker-compose.cpu.yml`。
+`docker/docker-compose.yml` 是唯一的 Docker 编排，只启动 vLLM 服务。端口、镜像、内存、API 密钥和外部声纹库连接可通过文件内列出的环境变量配置。PostgreSQL/pgvector 由部署环境独立维护，连接方式见[声纹识别共享库部署与准确度方案](声纹识别共享库部署与准确度方案.md)。
 
-声纹库使用独立的 pgvector compose，部署步骤和双服务共享配置见[声纹识别共享库部署与准确度方案](声纹识别共享库部署与准确度方案.md)。
+### vLLM 原生流式镜像
 
-### vLLM 原生流式镜像（独立）
-
-vLLM 模式（路线 A，逐句 partial→final 渐进流式 + 与 standard 同契约的离线 `/v2/asr`）为 **GPU 专用的独立镜像**，基于 vLLM 官方镜像 `vllm/vllm-openai` 派生，不与默认镜像合并——standard 用户不下载 vLLM 重型 CUDA kernels，vllm 用户不下载 OpenVINO/funasr。能力差异（含离线分段/标点/说话人的取舍）与参数见 [配置文档：vLLM 原生流式模式](configuration.md#vllm-原生流式模式路线-a)。
+Docker 部署固定使用 vLLM 模式（路线 A，逐句 partial→final 渐进流式 + 离线 `/v2/asr`）。镜像基于 `vllm/vllm-openai` 派生，能力和参数见[配置文档：vLLM 原生流式模式](configuration.md#vllm-原生流式模式路线-a)。
 
 ```bash
-# 启动（独立端口 8766，与 standard asr 8765 并存）
-docker compose -f docker/docker-compose.vllm.yml up -d
+# 启动
+[ -f asr-service/config.yaml ] || cp asr-service/config.example.yaml asr-service/config.yaml
+docker compose -f docker/docker-compose.yml up -d
 
 # 停止
-docker compose -f docker/docker-compose.vllm.yml down
+docker compose -f docker/docker-compose.yml down
 
-# 本地构建 vLLM 镜像（build.sh 选项 4）
-bash docker/build.sh   # 选择 "4) vLLM"
+# 本地构建 vLLM 镜像
+bash docker/build.sh
 ```
 
 > vLLM 引擎在独立 EngineCore 子进程持有 GPU，服务固定单 worker（容器内 PID 1 收割子进程）。模型用 HF 全精度 `models/asr/0.6b`/`1.7b`（与 standard 共用 `models/` 挂载）。
@@ -216,22 +198,18 @@ bash docker/build.sh
 
 ## 交互式管理脚本
 
-项目在仓库根目录提供交互式管理脚本，统一管理 Docker 和本地 venv 两种运行方式：
+项目在仓库根目录提供 Linux 交互式管理脚本，统一管理 Docker 和本地 venv 两种运行方式：
 
 ```bash
-# Linux / macOS
 bash manage.sh
-
-# Windows
-.\manage.ps1
 ```
 
 管理脚本支持：
 
-- **Docker Compose 启动（config.yaml 驱动，推荐）**：首次使用自动从 `config.example.yaml` 生成 `config.yaml`，可直接编辑配置后启动/停止/重启容器、查看日志、切换 GPU/CPU/**vLLM** 编排
-- Docker 管理（拉取镜像支持 GPU/CPU/**vLLM** 变体、构建镜像、参数向导启动/停止容器、查看日志）
+- **Docker Compose 启动（config.yaml 驱动，推荐）**：首次使用自动从 `config.example.yaml` 生成 `config.yaml`，可直接编辑配置后启动/停止/重启 vLLM 容器并查看日志
+- Docker 管理（拉取或构建 vLLM 镜像、参数向导启动/停止容器、查看日志）
 - 虚拟环境管理（standard `venv` 与 **vLLM `venv-vllm`** 双环境的安装/卸载/查看信息）
-- 启动服务（交互式配置参数，含 **`serve-mode` 选择 standard/vllm**，vLLM 自动用 venv-vllm 环境/`-vllm` 镜像，支持保存配置）
+- 启动服务（Docker 固定使用 vLLM；本地 venv 可选择 standard/vllm，vLLM 自动使用 `venv-vllm`，支持保存配置）
 
 ## 验证服务
 

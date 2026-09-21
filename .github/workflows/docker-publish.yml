@@ -1,17 +1,6 @@
 name: Docker Publish
 
-# 推送 vX.Y.Z 形式的 git tag 时触发，自动构建并推送镜像到阿里云容器镜像服务。
-#
-# 构建与打 tag 分离（方案 B）：
-#   1. 各构建 job 并行执行，仅按 digest 推送 blob（push-by-digest，不挂人类可见 tag）；
-#   2. 收尾 merge job 等全部构建完成后，用 imagetools 一次性挂上所有 tag，
-#      使阿里云镜像仓库上各 tag 同时出现、顺序一致，且发布接近原子（任一构建失败则不挂 tag）。
-#
-# 镜像变体：
-#   - CPU  (amd64)            -> :X.Y.Z-cpu    / :latest-cpu
-#   - vLLM (amd64)            -> :X.Y.Z-vllm   / :latest-vllm
-#     vLLM 变体为 GPU 原生流式独立镜像（基底 vllm/vllm-openai），独立 build + merge-vllm，
-#     构建失败不阻塞 CPU 发布。
+# 推送 vX.Y.Z 形式的 git tag 时构建并发布唯一的 vLLM 镜像。
 on:
   push:
     tags:
@@ -22,59 +11,9 @@ env:
   IMAGE_NAME: registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service
 
 jobs:
-  # 从 tag 派生纯版本号（v2.0.1 -> 2.0.1），供各构建 job 复用
-  setup:
-    runs-on: self-hosted
-    outputs:
-      version: ${{ steps.derive.outputs.version }}
-    steps:
-      - id: derive
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-  cpu-amd64:
-    needs: setup
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
-          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
-
-      - name: Build and push by digest (CPU, amd64)
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.cpu
-          platforms: linux/amd64
-          build-args: |
-            APP_VERSION=${{ needs.setup.outputs.version }}
-          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          provenance: false
-
-      - name: Export digest
-        run: |
-          mkdir -p "${RUNNER_TEMP}/digests"
-          digest="${{ steps.build.outputs.digest }}"
-          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: digests-cpu-amd64
-          path: ${{ runner.temp }}/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
   vllm:
-    needs: setup
     runs-on: self-hosted
     steps:
-      # vLLM 镜像（基底 vllm/vllm-openai 约 9GB 压缩）解压后很大，先清理腾出磁盘
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -90,107 +29,21 @@ jobs:
           username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
           password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
 
-      - name: Build and push by digest (vLLM, amd64)
-        id: build
+      - name: Resolve version
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push vLLM image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile.vllm
           platforms: linux/amd64
           build-args: |
-            APP_VERSION=${{ needs.setup.outputs.version }}
+            APP_VERSION=${{ steps.version.outputs.value }}
             VLLM_TAG=v0.14.0
-          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.value }}-vllm
+            ${{ env.IMAGE_NAME }}:latest-vllm
           provenance: false
-
-      - name: Export digest
-        run: |
-          mkdir -p "${RUNNER_TEMP}/digests"
-          digest="${{ steps.build.outputs.digest }}"
-          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: digests-vllm
-          path: ${{ runner.temp }}/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  # CPU 构建完成后统一挂 tag：amd64 单架构
-  merge:
-    needs: [setup, cpu-amd64]
-    runs-on: self-hosted
-    env:
-      VERSION: ${{ needs.setup.outputs.version }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: ${{ runner.temp }}/digests
-          pattern: digests-*
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
-          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
-
-      # 解析各构建产物的 digest，组装源引用
-      - name: Resolve digests
-        id: digests
-        run: |
-          amd64=$(ls "${RUNNER_TEMP}/digests/digests-cpu-amd64")
-          echo "cpu_src=${IMAGE_NAME}@sha256:${amd64}" >> "$GITHUB_OUTPUT"
-
-      - name: Push cpu version tag
-        run: |
-          docker buildx imagetools create -t "${IMAGE_NAME}:${VERSION}-cpu" \
-            "${{ steps.digests.outputs.cpu_src }}"
-
-      - name: Push latest cpu tag
-        run: |
-          docker buildx imagetools create -t "${IMAGE_NAME}:latest-cpu" \
-            "${{ steps.digests.outputs.cpu_src }}"
-
-      - name: Inspect published tags
-        run: |
-          docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}-cpu"
-
-  # vLLM 独立挂 tag：仅依赖 vllm 构建，与 gpu/cpu 的 merge 解耦，
-  # vLLM 构建失败不影响 CPU 镜像发布
-  merge-vllm:
-    needs: [setup, vllm]
-    runs-on: self-hosted
-    env:
-      VERSION: ${{ needs.setup.outputs.version }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: ${{ runner.temp }}/digests
-          pattern: digests-vllm
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
-          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
-
-      - name: Resolve digest
-        id: digests
-        run: |
-          vllm=$(ls "${RUNNER_TEMP}/digests/digests-vllm")
-          echo "vllm_src=${IMAGE_NAME}@sha256:${vllm}" >> "$GITHUB_OUTPUT"
-
-      - name: Push vllm tags
-        run: |
-          docker buildx imagetools create -t "${IMAGE_NAME}:${VERSION}-vllm" \
-            "${{ steps.digests.outputs.vllm_src }}"
-          docker buildx imagetools create -t "${IMAGE_NAME}:latest-vllm" \
-            "${{ steps.digests.outputs.vllm_src }}"
-
-      - name: Inspect published tag
-        run: |
-          docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}-vllm"

@@ -229,7 +229,7 @@ bash start.sh --no-config
 
 | 变量 | 对应配置键 | 说明 |
 |------|-----------|------|
-| `ASR_API_KEY` | `api_key` | API 密钥；优先级低于配置文件与命令行（配置文件中 `api_key: ""` 也会覆盖它——想用环境变量请删除该行） |
+| `ASR_API_KEY` | `api_key` | API 密钥；优先级低于配置文件与命令行（配置文件显式配置 `api_key` 时会覆盖环境变量） |
 | `MODEL_SOURCE` | `model_source` | 模型下载源 |
 | `SPEAKER_DATABASE_URL` | `speaker_database_url` | PostgreSQL/pgvector 连接地址；推荐用它避免把数据库密码写入配置文件 |
 
@@ -324,10 +324,11 @@ QWEN_VENV=venv-vllm bash asr-service/start.sh --serve-mode vllm --model-size 0.6
 # 或直接用 venv-vllm 解释器：
 asr-service/venv-vllm/bin/python -m app.main --serve-mode vllm --model-size 0.6b --web
 
-# Docker（独立镜像，独立端口 8766）
-docker compose -f docker/docker-compose.vllm.yml up -d
+# Docker
+[ -f asr-service/config.yaml ] || cp asr-service/config.example.yaml asr-service/config.yaml
+docker compose -f docker/docker-compose.yml up -d
 
-# 交互式：bash manage.sh → Venv 方式（启动模式选 vllm）/ Compose 方式（切 vLLM 编排）
+# 交互式：bash manage.sh → Venv 方式（启动模式选 vllm）/ Compose 方式
 ```
 
 **注意**

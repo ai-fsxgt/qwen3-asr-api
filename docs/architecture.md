@@ -55,16 +55,16 @@ asr-service/
 ├── logs/                          # 日志文件
 ├── scripts/                       # 开发/调研脚本
 │   └── e2e/                       # 兼容接口端到端冒烟（独立 venv 一键 run.sh）
-├── setup.sh / setup.ps1           # 环境初始化
-├── start.sh / start.ps1           # 服务启动
+├── setup.sh                       # 环境初始化
+├── start.sh                       # 服务启动
 ├── config.example.yaml            # 配置模板（首启自动拷贝为 config.yaml）
 └── requirements.txt               # 依赖清单
 
 # 项目根目录
-├── manage.sh / manage.ps1                # 交互式管理脚本（Compose / venv / 启动服务统一入口）
+├── manage.sh                             # 交互式管理脚本（Compose / venv / 启动服务统一入口）
 ├── docker/                         # Docker 资产目录（集中存放，保持根目录整洁）
-│   ├── Dockerfile / Dockerfile.cpu     # GPU / CPU 镜像构建
-│   ├── docker-compose.yml / *.cpu.yml  # Docker Compose 编排
+│   ├── Dockerfile.vllm                 # vLLM 镜像构建
+│   ├── docker-compose.yml              # vLLM Docker Compose 编排
 │   ├── build.sh                        # 镜像构建脚本
 │   └── DOCKERHUB.md                    # Docker Hub 页面文案
 └── .dockerignore                   # 构建上下文过滤（须随上下文置于根）

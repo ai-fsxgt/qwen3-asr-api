@@ -55,16 +55,16 @@ asr-service/
 ├── logs/                          # Log files
 ├── scripts/                       # Dev/research scripts
 │   └── e2e/                       # Compat-API end-to-end smoke (isolated venv, one-shot run.sh)
-├── setup.sh / setup.ps1           # Environment initialization
-├── start.sh / start.ps1           # Service startup
+├── setup.sh                       # Environment initialization
+├── start.sh                       # Service startup
 ├── config.example.yaml            # Config template (auto-copied to config.yaml on first run)
 └── requirements.txt               # Dependencies
 
 # Project root
-├── manage.sh / manage.ps1                # Interactive management script (Compose / venv / start service)
+├── manage.sh                             # Interactive management script (Compose / venv / start service)
 ├── docker/                         # Docker assets directory (centralized, keeps root clean)
-│   ├── Dockerfile / Dockerfile.cpu     # GPU / CPU image build
-│   ├── docker-compose.yml / *.cpu.yml  # Docker Compose orchestration
+│   ├── Dockerfile.vllm                 # vLLM image build
+│   ├── docker-compose.yml              # vLLM Docker Compose orchestration
 │   ├── build.sh                        # Image build script
 │   └── DOCKERHUB.md                    # Docker Hub page copy
 └── .dockerignore                   # Build-context filter (must sit at root with the context)

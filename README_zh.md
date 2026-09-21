@@ -2,7 +2,7 @@
 
 **中文** | [English](README.md)
 
-基于 Qwen3-ASR 的简单、快速、高效语音识别 API 服务。开箱即用，离线长音频与实时流式转写一体，支持说话人分离 / 声纹库识别，并提供多功能、美观实用的 Web UI。Linux / macOS / Windows 多平台兼容，支持 Docker 容器部署，支持 GPU（CUDA）和 CPU（OpenVINO INT8）双模式推理。
+基于 Qwen3-ASR 的简单、快速、高效语音识别 API 服务。开箱即用，离线长音频与实时流式转写一体，支持说话人分离 / 声纹库识别，并提供多功能、美观实用的 Web UI。支持 Linux 与 Docker 容器部署，支持 GPU（CUDA）和 CPU（OpenVINO INT8）双模式推理。
 
 ## 特性
 
@@ -32,7 +32,7 @@
 **推荐**：在仓库根目录运行交互式管理脚本（Docker / venv 统一入口，向导式安装与启停）：
 
 ```bash
-bash manage.sh          # Linux / macOS；Windows 用 PowerShell 运行 .\manage.ps1
+bash manage.sh          # Linux
 ```
 
 > 也可手动分步执行（进入应用目录）：
@@ -56,11 +56,11 @@ Docker 方式：
 ```bash
 docker run -d --gpus all -p 8765:8765 \
   -v ./asr-service/models:/app/models \
-  --name qwen3-asr-service \
-  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest --web
+  --name qwen3-asr-vllm \
+  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm --web
 ```
 
-> Windows 部署、CPU/ARM64 模式、docker-compose、局域网访问、API 认证等：见 [部署指南](docs/deployment.md)。
+> Docker 仅提供 vLLM GPU 镜像；本地 CPU 模式、docker-compose、局域网访问和 API 认证等见[部署指南](docs/deployment.md)。
 
 ## 预览
 
@@ -72,7 +72,7 @@ docker run -d --gpus all -p 8765:8765 \
 
 | 文档 | 内容 |
 |------|------|
-| [部署指南](docs/deployment.md) | 系统要求、Linux / Windows / Docker 部署、三种运行模式、Web UI、安全终止 |
+| [部署指南](docs/deployment.md) | 系统要求、Linux / Docker 部署、三种运行模式、Web UI、安全终止 |
 | [配置文档](docs/configuration.md) | 启动参数全表、config.yaml 配置文件、环境变量、任务持久化、内置常量 |
 | [vLLM 与 standard 差异](docs/vllm-vs-standard.md) | vLLM 引擎相对默认 standard 模式的功能差异（选型与升级参考） |
 | [API 文档 v2（默认）](docs/api/v2.md) | 离线批处理、健康检查 / 能力查询、实时转写 WebSocket 协议 |

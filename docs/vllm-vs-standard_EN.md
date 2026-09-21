@@ -107,9 +107,9 @@
 ## 5. Deployment & operations changes
 
 - **Isolated local env**: `bash setup.sh --vllm` creates `venv-vllm`; start with `QWEN_VENV=venv-vllm bash start.sh --serve-mode vllm`.
-- **Separate Docker image**: `docker/Dockerfile.vllm` (derived from `vllm/vllm-openai:v0.14.0`) + `docker/docker-compose.vllm.yml` (separate port **8766**, coexists with standard's 8765); built via `docker/build.sh` option 4.
-- **Interactive management script `manage.sh`**: the parameter panel gains a "serving mode" item (the panel morphs after picking vllm); venv launch auto-uses `venv-vllm`, Docker auto-uses the `-vllm` image tag, Compose orchestration / image pull gain a vLLM variant, and the venv menu manages both standard/vLLM environments.
-- **CI**: a new standalone vLLM image build job (tags `:<ver>-vllm` / `:latest-vllm`, decoupled from GPU/CPU).
+- **Docker image**: `docker/Dockerfile.vllm` is derived from `vllm/vllm-openai:v0.14.0` and starts through the sole `docker/docker-compose.yml`; `docker/build.sh` builds the vLLM image directly.
+- **Interactive management script `manage.sh`**: Docker and Compose use vLLM only; local venv management still supports standard and vLLM environments.
+- **CI**: publishes the `:<ver>-vllm` and `:latest-vllm` image tags.
 
 ---
 

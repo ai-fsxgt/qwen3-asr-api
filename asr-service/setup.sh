@@ -102,25 +102,26 @@ if [ "${1:-}" = "--vllm" ]; then
     exit 0
 fi
 
-# 0. Linux users are advised to use Docker image
-if [ "$(uname -s)" = "Linux" ]; then
+# 0. Linux GPU users are advised to use the vLLM Docker image.
+# CPU-only hosts continue directly with the local standard/OpenVINO setup.
+if [ "$(uname -s)" = "Linux" ] && command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
     echo ""
     echo "[Recommended] Linux detected, Docker image deployment is recommended (ready to use, no manual setup needed):"
     echo ""
     echo "  Option 1: docker run"
     echo ""
-    echo "    docker pull registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest"
+    echo "    docker pull registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm"
     echo "    docker run -d --gpus all -p 8765:8765 \\"
     echo "      -v ./models:/app/models \\"
     echo "      -v ./logs:/app/logs \\"
-    echo "      registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest \\"
-    echo "      --model-size=1.7b --device=auto --model-source=modelscope \\"
-    echo "      --enable-align --web --max-segment=20"
+    echo "      registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm \\"
+    echo "      --model-size=1.7b --model-source=modelscope --web"
     echo ""
-    echo "  Option 2: docker-compose"
+    echo "  Option 2: Docker Compose V2"
     echo ""
     echo "    A docker/docker-compose.yml is provided in the project, just run:"
-    echo "    docker compose -f docker/docker-compose.yml up -d"
+    echo "    [ -f \"$SCRIPT_DIR/config.yaml\" ] || cp \"$SCRIPT_DIR/config.example.yaml\" \"$SCRIPT_DIR/config.yaml\""
+    echo "    docker compose -f \"$SCRIPT_DIR/../docker/docker-compose.yml\" up -d"
     echo ""
     read -p "Continue with local installation? [y/N]: " CONTINUE_LOCAL
     CONTINUE_LOCAL=${CONTINUE_LOCAL:-N}

@@ -6,7 +6,6 @@
 
 - [System Requirements](#system-requirements)
 - [Linux Deployment](#linux-deployment)
-- [Windows Deployment (Python Embeddable)](#windows-deployment-python-embeddable)
 - [Enable API Authentication](#enable-api-authentication)
 - [Docker Deployment](#docker-deployment)
 - [Interactive Management Script](#interactive-management-script)
@@ -24,6 +23,7 @@
 - ffmpeg (required)
 - NVIDIA GPU + CUDA 12.1+ (required for GPU mode)
 - OpenVINO >= 2024.0 (required for CPU mode, auto-installed via pip)
+- Docker Engine + Docker Compose V2 (required for Docker orchestration)
 
 ```bash
 # Install ffmpeg (Ubuntu/Debian)
@@ -92,24 +92,6 @@ bash start.sh --host 0.0.0.0 --port 9000
 
 > Startup parameters can also be managed in `config.yaml` (auto-generated on first startup). Full parameter table and priority rules: see the [configuration reference](configuration_EN.md).
 
-## Windows Deployment (Python Embeddable)
-
-Windows can use the Python Embeddable Package for standalone portable deployment:
-
-1. Download the [Python 3.12 Embeddable Package](https://www.python.org/downloads/windows/) and place it in the `bin/` directory
-2. Download [ffmpeg](https://www.gyan.dev/ffmpeg/builds/) and place `ffmpeg.exe` in the `bin/` directory
-3. Run the initialization script (PowerShell):
-   ```powershell
-   cd asr-service
-   .\setup.ps1
-   ```
-4. Start the service:
-   ```powershell
-   .\start.ps1 --device cuda --model-size 0.6b --host 0.0.0.0
-   ```
-
-> 💡 The PowerShell scripts (`.ps1`) are recommended. The same-named `.bat` files (`setup.bat` / `start.bat`) are kept only for legacy cmd compatibility and are not guaranteed to run on newer setups — switch to `.ps1` if you hit issues. If the first `.ps1` run is blocked by execution policy, use `powershell -ExecutionPolicy Bypass -File .\setup.ps1`.
-
 ## Enable API Authentication
 
 After setting an API key, all endpoints (except `/health` and `/capabilities`) require a Bearer Token:
@@ -132,49 +114,49 @@ Client usage: see [API reference · Authentication](api/v2/basics_EN.md#authenti
 ### Using Pre-built Images
 
 ```bash
-# Pull the image
-docker pull registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest
+# Pull the vLLM image
+docker pull registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm
 
-# Start the container (GPU mode)
+# Start the container (vLLM, GPU only)
 docker run -d --gpus all \
   -p 8765:8765 \
   -v ./asr-service/models:/app/models \
   -v ./asr-service/logs:/app/logs \
   -v ./asr-service/data:/app/data \
-  --name qwen3-asr-service \
-  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest \
-  --model-size 0.6b --device auto --web
+  --name qwen3-asr-vllm \
+  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm \
+  --model-size 0.6b --web
 ```
 
-`/app/data` holds the task-persistence DB `tasks.db` and real-time recordings; shared voiceprints live in an external PostgreSQL/pgvector database. The compose file mounts the local data directory by default. CPU / ARM64 images (`latest-cpu` / `latest-arm64`) and more volume details: see the [Docker Hub page](https://hub.docker.com/r/lancelrq/qwen3-asr-service).
+`/app/data` holds the task-persistence DB `tasks.db` and real-time recordings; shared voiceprints live in an external PostgreSQL/pgvector database. The Compose file mounts the local data directory by default.
 
-### Using docker-compose
+### Using Docker Compose V2
 
 ```bash
-# Start directly (using default configuration in docker/docker-compose.yml)
+# Start the vLLM service
+[ -f asr-service/config.yaml ] || cp asr-service/config.example.yaml asr-service/config.yaml
 docker compose -f docker/docker-compose.yml up -d
 
 # Stop
 docker compose -f docker/docker-compose.yml down
 ```
 
-Startup parameters, API keys, port mappings, etc. can be configured in `docker/docker-compose.yml`. See comments in the file. The CPU variant lives in `docker/docker-compose.cpu.yml`.
+`docker/docker-compose.yml` is the only Docker orchestration and starts the vLLM service. Configure its port, image, memory, API key, and external voiceprint database connection through the environment variables documented in that file. PostgreSQL/pgvector is managed separately by the deployment environment; see [Shared Voiceprint Database Deployment and Accuracy](声纹识别共享库部署与准确度方案_EN.md).
 
-The voiceprint database uses a separate pgvector compose file. See [Shared Voiceprint Database Deployment and Accuracy](声纹识别共享库部署与准确度方案_EN.md) for deployment and multi-service configuration.
+### vLLM Native Streaming Image
 
-### vLLM Native Streaming Image (standalone)
-
-The vLLM mode (Route A, incremental partial→final streaming plus an offline `/v2/asr` with the same contract as standard) ships as a **standalone GPU-only image** derived from the official `vllm/vllm-openai` image — not merged with the default image, so standard users don't download vLLM's heavy CUDA kernels and vllm users don't download OpenVINO/funasr. For capability differences (including the offline segmentation/punctuation/speaker trade-offs) and parameters see [Configuration: vLLM Native Streaming Mode](configuration_EN.md#vllm-native-streaming-mode-route-a).
+Docker deployment always uses vLLM mode (Route A, incremental partial→final streaming plus offline `/v2/asr`). The GPU-only image is derived from `vllm/vllm-openai`; see [Configuration: vLLM Native Streaming Mode](configuration_EN.md#vllm-native-streaming-mode-route-a) for capabilities and tuning parameters.
 
 ```bash
-# Start (separate port 8766, coexists with standard asr on 8765)
-docker compose -f docker/docker-compose.vllm.yml up -d
+# Start
+[ -f asr-service/config.yaml ] || cp asr-service/config.example.yaml asr-service/config.yaml
+docker compose -f docker/docker-compose.yml up -d
 
 # Stop
-docker compose -f docker/docker-compose.vllm.yml down
+docker compose -f docker/docker-compose.yml down
 
-# Build the vLLM image locally (build.sh option 4)
-bash docker/build.sh   # choose "4) vLLM"
+# Build the vLLM image locally
+bash docker/build.sh
 ```
 
 > The vLLM engine holds the GPU in a separate EngineCore subprocess and the service runs a single worker (PID 1 reaps the subprocess in the container). It loads HF full-precision `models/asr/0.6b`/`1.7b` (shares the `models/` mount with standard).
@@ -216,22 +198,18 @@ bash docker/build.sh
 
 ## Interactive Management Script
 
-The project provides interactive management scripts in the repository root for unified management of both Docker and local venv environments:
+The project provides a Linux interactive management script in the repository root for unified management of both Docker and local venv environments:
 
 ```bash
-# Linux / macOS
 bash manage.sh
-
-# Windows
-.\manage.ps1
 ```
 
 Management script features:
 
-- **Docker Compose start (config.yaml-driven, recommended)**: on first use, auto-generates `config.yaml` from `config.example.yaml`; edit the config then start/stop/restart the container, view logs, switch GPU/CPU/**vLLM** compose
-- Docker management (pull images in GPU/CPU/**vLLM** variants, build images, parameter-wizard start/stop containers, view logs)
+- **Docker Compose start (config.yaml-driven, recommended)**: on first use, auto-generates `config.yaml` from `config.example.yaml`; edit the config, then start/stop/restart the vLLM container and view logs
+- Docker management (pull or build the vLLM image, start/stop it through the parameter wizard, and view logs)
 - Virtual environment management (install/uninstall/view info for both standard `venv` and **vLLM `venv-vllm`**)
-- Start service (interactive parameter configuration including **`serve-mode` standard/vllm**; vLLM auto-uses the venv-vllm env / `-vllm` image; config saving supported)
+- Start service (Docker always uses vLLM; local venv can select standard/vllm, with vLLM automatically using `venv-vllm`; config saving supported)
 
 ## Verify the Service
 

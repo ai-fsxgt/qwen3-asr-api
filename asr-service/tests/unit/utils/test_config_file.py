@@ -255,7 +255,7 @@ def test_example_passes_schema_validation():
     assert parsed["enable_align"] is False
     assert parsed["enable_stream"] is True
     assert parsed["web"] is True
-    assert parsed["api_key"] == ""
+    assert "api_key" not in parsed  # 默认不覆盖 ASR_API_KEY 环境变量
     assert parsed["enable_task_store"] is True   # P 系列：example 默认开启（schema 默认关闭）
     assert parsed["enable_speaker"] is False     # S 系列：example 默认关闭（与 schema 一致）
     assert parsed["enable_speaker_db"] is False  # V 系列：example 默认关闭（依赖 api_key）

@@ -2,11 +2,15 @@
 
 ## Project Structure & Module Organization
 
-This repository contains a Python ASR API service. Core source code lives in `asr-service/app`, organized by API routes, compatibility adapters, engines, runtime services, pipeline logic, and utilities. Tests live in `asr-service/tests`, split into `unit` and `integration`. Public documentation is under `docs`; keep Chinese docs as the base filename and English docs with `_EN` suffix. Docker assets are in `docker`, and root `manage.sh` / `manage.ps1` provide interactive service management.
+This repository contains a Python ASR API service. Core source code lives in `asr-service/app`, organized by API routes, compatibility adapters, engines, runtime services, pipeline logic, and utilities. Tests live in `asr-service/tests`, split into `unit` and `integration`. Public documentation is under `docs`; keep Chinese docs as the base filename and English docs with `_EN` suffix. Docker assets are in `docker`, and root `manage.sh` provides interactive service management.
+
+## Supported Platform
+
+Linux is the only supported deployment and development platform. Do not add, maintain, or validate Windows compatibility unless the user explicitly requests it. Windows-specific behavior must not block code review or release.
 
 ## Build, Test, and Development Commands
 
-- `bash manage.sh`: recommended Linux/macOS entry for guided setup, start, stop, and Docker/venv management.
+- `bash manage.sh`: recommended Linux entry for guided setup, start, stop, and Docker/venv management.
 - `cd asr-service && bash setup.sh`: create/update the standard virtual environment and install runtime dependencies.
 - `cd asr-service && bash start.sh --web`: start the local service and Web UI.
 - `PYTHONPATH=asr-service .venv/bin/python -m pytest asr-service/tests/unit -q`: run unit tests with coverage from `pytest.ini`.

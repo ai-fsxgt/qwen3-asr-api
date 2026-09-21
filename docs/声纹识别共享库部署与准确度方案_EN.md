@@ -13,7 +13,7 @@ For a library of a few hundred speakers, identification uses exact pgvector
 cosine-distance queries without an HNSW index. This avoids approximate-recall
 loss; add an index only after measured latency justifies it.
 
-## 2. Start PostgreSQL/pgvector
+## 2. Prepare PostgreSQL/pgvector
 
 The database image is:
 
@@ -21,23 +21,16 @@ The database image is:
 registry.cn-hangzhou.aliyuncs.com/ripper/pgvector:pg16
 ```
 
-Start it from the deployment directory:
-
-```bash
-cd docker
-POSTGRES_PASSWORD='replace-with-a-strong-password' docker compose \
-  -f docker-compose.pgvector.yml up -d
-```
-
-The compose file binds port 5432 to `127.0.0.1` by default. If another server
-must connect directly, set `POSTGRES_BIND_ADDRESS` to the database server's
-private IP and allow only the ASR servers through the firewall.
+The project no longer bundles PostgreSQL orchestration. Provision the database
+independently and make it reachable from the vLLM container over a private
+network. When using the image above, persist `/var/lib/postgresql/data`. Allow
+only the ASR servers to access port 5432; never expose it to the public Internet.
 
 Production requirements:
 
 - Never commit the database password.
 - Do not expose port 5432 to the public Internet.
-- Back up the `qwen3_asr` database and the `postgres_data` volume regularly.
+- Back up the `qwen3_asr` database and its data volume regularly.
 - Configure both ASR services with the same `SPEAKER_DATABASE_URL`.
 - Multi-instance deployments must keep `speaker_store_audio: false`. The
   process-local lock cannot coordinate separate instances, so enabling audio
