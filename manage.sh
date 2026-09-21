@@ -16,7 +16,7 @@ SERVICE_CONFIG_EXAMPLE="$SERVICE_DIR/config.example.yaml"
 CONFIG_FILE="$SERVICE_DIR/.cli_launch_config"
 IMAGE_NAME="registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service"
 IMAGE_TAG="latest-vllm"
-CONTAINER_NAME="qwen3-asr-vllm"
+CONTAINER_NAME="qwen3-asr-service"
 
 # ANSI 颜色
 RED='\033[0;31m'
@@ -472,7 +472,7 @@ compose_up() {
         echo
         success_msg "容器已启动"
         local published public_port
-        published=$($COMPOSE_CMD -f "$file" port asr-vllm 8765)
+        published=$($COMPOSE_CMD -f "$file" port asr 8765)
         published="${published%%$'\n'*}"
         public_port="${published##*:}"
         info_msg "Web UI: http://<host>:${public_port}/web-ui"

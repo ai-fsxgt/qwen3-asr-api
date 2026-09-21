@@ -58,7 +58,7 @@ With Docker:
 ```bash
 docker run -d --gpus all -p 8765:8765 \
   -v ./asr-service/models:/app/models \
-  --name qwen3-asr-vllm \
+  --name qwen3-asr-service \
   registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm --web
 ```
 
