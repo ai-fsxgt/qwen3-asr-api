@@ -2,7 +2,7 @@
 
 覆盖：identify_speakers 联动字段（speaker_name / speakers 升级为映射表）、
 未命中保留匿名、模块关闭/分离失败字段不出现、segment 级不带 speaker_id、
-clusters 衔接面字段（label/centroid/dur_sec）。
+clusters 衔接面字段（label/centroid/dur_sec/evidence）。
 """
 import threading
 import types
@@ -94,7 +94,7 @@ def test_identify_attaches_names_and_mapping(run_env, tmp_path):
 
 
 def test_identify_clusters_interface_fields(run_env, tmp_path):
-    """S3→V3 衔接面：service 收到 [{"label","centroid","dur_sec"}]。"""
+    """service 收到包含质心、时长和局部身份识别证据的簇。"""
     service = FakeSpeakerService()
     pipe = _make_pipe(FakeSpeakerEngine(), service)
     pipe.run(str(tmp_path / "a.mp3"), "t1", identify_speakers=True)
@@ -103,6 +103,10 @@ def test_identify_clusters_interface_fields(run_env, tmp_path):
     for c in clusters:
         assert c["centroid"].shape == (DIM,)
         assert c["dur_sec"] == pytest.approx(3.0)   # 每段 3s 窗并集
+        assert c["evidence"]
+        assert sum(item["dur_sec"] for item in c["evidence"]) == pytest.approx(
+            c["dur_sec"]
+        )
 
 
 def test_identify_miss_keeps_anonymous(run_env, tmp_path):

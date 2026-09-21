@@ -506,8 +506,6 @@ class SpeakerService:
         prepared: list[tuple[str, list[tuple[np.ndarray, float]]]] = []
         vectors = []
         for cluster in clusters:
-            if "evidence" not in cluster:
-                continue
             groups = self._group_identity_evidence(
                 cluster["evidence"],
                 cfg.SPEAKER_IDENTIFY_MIN_SEC,
@@ -671,7 +669,7 @@ class SpeakerService:
                                 cancelled=None) -> list[dict]:
         """离线联动入口（识别 + 自动登记）。
 
-        clusters = [{"label","centroid","dur_sec"}]（S3 衔接面）。未命中且开启
+        clusters = [{"label","centroid","dur_sec","evidence"}]。未命中且开启
         speaker_auto_enroll 且簇语音总时长过门槛 → 以「说话人_NN」占位名登记
         （source='auto'；开启自动登记 = 部署方声明已获数据主体同意，consent 同责）。
         已命中的说话人不自动追加模板（防投毒）。登记失败退回匿名，不影响转写。
@@ -704,22 +702,17 @@ class SpeakerService:
                     if cancelled and cancelled():
                         break
                     dur = float(c.get("dur_sec") or 0.0)
-                    evidence_result = evidence_results.get(label)
-                    decision = None
-                    if evidence_result is not None:
-                        decision, detail = evidence_result
-                        self._audit_identification(
-                            decision,
-                            via="offline",
-                            duration_sec=dur,
-                            label=label,
-                            threshold=thr,
-                            required_margin=mgn,
-                            evidence_detail=detail,
-                        )
-                        hit = decision.as_match()
-                    else:
-                        hit = None
+                    decision, detail = evidence_results[label]
+                    self._audit_identification(
+                        decision,
+                        via="offline",
+                        duration_sec=dur,
+                        label=label,
+                        threshold=thr,
+                        required_margin=mgn,
+                        evidence_detail=detail,
+                    )
+                    hit = decision.as_match()
                     if (
                         cfg.SPEAKER_AUTO_ENROLL
                         and dur >= cfg.SPEAKER_IDENTIFY_MIN_SEC
@@ -728,8 +721,7 @@ class SpeakerService:
                         if hit:
                             mapping = {"label": label, **hit}
                         elif (
-                            decision is not None
-                            and decision.reason in {
+                            decision.reason in {
                                 "ambiguous_margin",
                                 "inconsistent_identity",
                                 "insufficient_identity_support",
@@ -746,13 +738,6 @@ class SpeakerService:
                             if mapping is None:
                                 break
                     else:
-                        if evidence_result is None:
-                            hit = self._identify_cluster(
-                                c,
-                                threshold=thr,
-                                margin=mgn,
-                                via="offline",
-                            )
                         if cancelled and cancelled():
                             break
                         if hit:

@@ -290,7 +290,7 @@ class DiarizationResult:
 
     @property
     def clusters(self) -> list[dict]:
-        """[{"label","centroid","dur_sec"}]：每簇 L2 归一质心 + 语音总时长。
+        """返回每簇质心、语音总时长和不重叠的身份识别证据。
 
         dur_sec 为簇内窗时间区间的并集长度（滑窗重叠不重复计），
         是声纹库自动登记质量门槛（≥ speaker_auto_enroll_min_sec）的依据。
