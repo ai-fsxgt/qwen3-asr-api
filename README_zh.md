@@ -56,7 +56,7 @@ Docker 方式：
 ```bash
 docker run -d --gpus all -p 8765:8765 \
   -v ./asr-service/models:/app/models \
-  --name qwen3-asr-service \
+  --name qwen3-asr-vllm \
   registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm --web
 ```
 
