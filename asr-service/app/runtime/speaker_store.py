@@ -205,6 +205,7 @@ class SpeakerStore:
                 )
                 self._pool.wait(timeout=pool_timeout)
                 self._initialize_schema()
+                speaker_count = self.speaker_count
         except Exception as exc:
             if self._pool is not None:
                 self._pool.close()
@@ -214,7 +215,7 @@ class SpeakerStore:
             "共享声纹库已启用: %s（model_tag=%s，%d 人）",
             self._safe_database_label(database_url),
             model_tag,
-            self.speaker_count,
+            speaker_count,
         )
 
     @classmethod
