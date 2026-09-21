@@ -278,7 +278,7 @@ class SpeakerService:
         return {"speaker_id": speaker_id, "templates": len(info["templates"]) if info else 0}
 
     def delete_speaker(self, speaker_id: str) -> None:
-        """硬删除（库 + 留存音频目录同步清理——被遗忘权完整覆盖）。"""
+        """删除数据库记录并清理留存音频目录。"""
         with self._speaker_data_lock:
             self.store.delete_speaker(speaker_id)
             audio_dir = self._audio_dir(speaker_id)

@@ -18,7 +18,7 @@
       'source.auto': '自动登记', 'source.manual': '手动登记',
       'btn.edit': '改名/备注', 'btn.delete': '删除',
       'confirm.deletePositive': '删除', 'confirm.deleteNegative': '取消',
-      'confirm.deleteBody': '硬删除不可恢复：声纹模板与留存音频将一并清除，该说话人在后续转写中退回匿名。',
+      'confirm.deleteBody': '删除后无法通过接口恢复：说话人与声纹模板将从数据库删除，留存音频将一并清理；该说话人在后续转写中退回匿名。',
       // 列表说明 / 空态
       'list.note': '数据永不自动清理；仅在服务端开启 speaker_auto_enroll 后，离线转写的声纹识别（identify_speakers）才会自动登记未知说话人；改名后立即在后续转写中生效。',
       'list.empty': '暂无说话人：请经 POST /v2/speakers 手动登记；如服务端已开启 speaker_auto_enroll，也可在离线转写中启用 identify_speakers 自动登记',
@@ -52,7 +52,7 @@
       'source.auto': 'Auto-enrolled', 'source.manual': 'Manual',
       'btn.edit': 'Rename / Note', 'btn.delete': 'Delete',
       'confirm.deletePositive': 'Delete', 'confirm.deleteNegative': 'Cancel',
-      'confirm.deleteBody': 'Hard delete is irreversible: voiceprint templates and retained audio are removed; this speaker falls back to anonymous in subsequent transcriptions.',
+      'confirm.deleteBody': 'This cannot be restored through the API: the speaker and voiceprint templates are deleted from the database, retained audio is removed, and subsequent transcriptions fall back to anonymous.',
       'list.note': 'Data is never auto-cleaned. Unknown speakers are auto-enrolled by offline identification (identify_speakers) only when speaker_auto_enroll is enabled on the server; renames take effect immediately in subsequent transcriptions.',
       'list.empty': 'No speakers yet: enroll manually via POST /v2/speakers, or enable speaker_auto_enroll on the server and identify_speakers for offline transcription',
       'edit.title': 'Rename / Note', 'edit.nameLabel': 'Display name',

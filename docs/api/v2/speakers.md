@@ -58,7 +58,9 @@
 
 > 浏览器管理页：启动加 `--web` 后访问 `/web-ui/speakers`（列表 / 改名备注 / 删除）。
 
-声纹数据**永不自动清理**（与任务库的 7 天 TTL 不同），唯一删除途径为 DELETE 接口（硬删除 + 物理回收）。
+声纹数据**永不自动清理**（与任务库的 7 天 TTL 不同），唯一删除途径为 DELETE 接口。
+DELETE 事务提交后，说话人及其声纹模板会立即从业务查询中移除；PostgreSQL
+删除产生的死元组与存储复用由 autovacuum 和运维策略处理，WAL 和备份按各自保留策略清理。
 
 ### 登记说话人
 
@@ -129,7 +131,7 @@ curl -X POST http://127.0.0.1:8765/v2/speakers/9f86.../claim \
 GET    /v2/speakers                 → {"total": N, "speakers": [{id,name,note,source,template_count,created_at,updated_at}]}
 GET    /v2/speakers/{id}            → 详情（含模板摘要 templates: [{id,dur_sec,created_at}]，不含特征向量）
 PATCH  /v2/speakers/{id}            → body {"name"?, "note"?}；改名不影响 speaker_id 与模板，后续转写立即显新名
-DELETE /v2/speakers/{id}            → 硬删除（级联模板 + 物理回收 + 留存音频清理，不可恢复）；该说话人在后续转写中退回匿名
+DELETE /v2/speakers/{id}            → 删除数据库记录并级联模板，同时清理留存音频；无法通过 API 恢复，后续转写退回匿名
 ```
 
 - `source` 字段区分 `manual`（手动登记）/ `auto`（自动登记），便于清查占位名条目。

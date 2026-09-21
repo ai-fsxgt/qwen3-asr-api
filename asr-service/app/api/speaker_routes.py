@@ -218,7 +218,7 @@ async def update_speaker(speaker_id: str, body: SpeakerUpdateRequest) -> Speaker
 
 
 async def delete_speaker(speaker_id: str) -> SpeakerDeleteResponse:
-    """硬删除（级联模板 + 物理回收 + 留存音频清理，不可恢复——被遗忘权）。"""
+    """硬删除数据库记录与级联模板，并清理留存音频。"""
     service = _require_service()
     await _run(service.delete_speaker, speaker_id)
     return SpeakerDeleteResponse(speaker_id=speaker_id)

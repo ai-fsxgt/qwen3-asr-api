@@ -58,7 +58,11 @@ Offline result example with voiceprint identification (the incremental part of `
 
 > Browser management page: start with `--web` and open `/web-ui/speakers` (list / rename & note / delete).
 
-Voiceprint data is **never auto-cleaned** (unlike the task store's 7-day TTL); the only way to delete is via the DELETE endpoint (hard delete + physical reclamation).
+Voiceprint data is **never auto-cleaned** (unlike the task store's 7-day TTL); the only way to delete is via the DELETE endpoint.
+After the DELETE transaction commits, the speaker and associated voiceprint
+templates are immediately absent from application queries. PostgreSQL handles
+dead tuples and storage reuse through autovacuum and operational maintenance;
+WAL and backups follow their respective retention policies.
 
 ### Enroll a Speaker
 
@@ -129,7 +133,7 @@ The `template_ids` in a successful response follow the upload order of `files`, 
 GET    /v2/speakers                 → {"total": N, "speakers": [{id,name,note,source,template_count,created_at,updated_at}]}
 GET    /v2/speakers/{id}            → detail (includes template summary templates: [{id,dur_sec,created_at}], without feature vectors)
 PATCH  /v2/speakers/{id}            → body {"name"?, "note"?}; renaming does not affect speaker_id or templates, and subsequent transcriptions show the new name immediately
-DELETE /v2/speakers/{id}            → hard delete (cascades templates + physical reclamation + cleanup of retained audio, unrecoverable); this speaker falls back to anonymous in subsequent transcriptions
+DELETE /v2/speakers/{id}            → deletes the database row and cascaded templates, and cleans up retained audio; it cannot be restored through the API, and subsequent transcriptions fall back to anonymous
 ```
 
 - The `source` field distinguishes `manual` (manually enrolled) / `auto` (auto-enrolled), which helps audit placeholder-name entries.
