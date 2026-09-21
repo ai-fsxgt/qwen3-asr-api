@@ -55,27 +55,31 @@ class OnlineSpeakerClusterer:
         self._max = max_speakers
         self._min_seg_ms = min_seg_ms
         self._centroids: list[np.ndarray] = []   # 每说话人运行质心（L2 归一）
-        self._counts: list[int] = []
+        self._durations_ms: list[int] = []
 
     def assign(self, emb: np.ndarray, dur_ms: int) -> str | None:
         """归簇一个段级 embedding（L2 归一 [192]），返回 A/B/C… 或 None（无法判定）。"""
+        dur_ms = max(int(dur_ms), 0)
         sims = [float(c @ emb) for c in self._centroids]
         best = max(sims, default=-1.0)
         idx = sims.index(best) if sims else -1
 
         if dur_ms < self._min_seg_ms:
             # 短段 embedding 不可靠（spike EXP7）：只挂靠，不建簇不更新质心
-            return speaker_label(idx) if best >= self._thr else None
+            if best >= self._thr:
+                return speaker_label(idx)
+            return None
         if best >= self._thr:
-            merged = self._centroids[idx] * self._counts[idx] + emb
+            previous_ms = self._durations_ms[idx]
+            merged = self._centroids[idx] * previous_ms + emb * dur_ms
             self._centroids[idx] = merged / np.linalg.norm(merged)
-            self._counts[idx] += 1
+            self._durations_ms[idx] += dur_ms
             return speaker_label(idx)
         if len(self._centroids) >= self._max:
-            # 超上限：归入最近簇（不更新质心，避免污染）
-            return speaker_label(idx) if idx >= 0 else None
+            # 低置信度且已达上限：保持匿名，避免强塞最近簇污染身份结果。
+            return None
         self._centroids.append(np.asarray(emb, dtype=np.float32).copy())
-        self._counts.append(1)
+        self._durations_ms.append(dur_ms)
         return speaker_label(len(self._centroids) - 1)
 
     @property
@@ -89,12 +93,12 @@ class OnlineSpeakerClusterer:
             return self._centroids[idx]
         return None
 
-    def count_of(self, label: str) -> int:
-        """按标签取质心累计段数（声纹识别会话缓存的失效依据：计数翻倍才重查）。"""
+    def duration_sec_of(self, label: str) -> float:
+        """返回参与质心计算的累计语音时长，供实时识别质量门控。"""
         idx = _label_index(label)
-        if 0 <= idx < len(self._counts):
-            return self._counts[idx]
-        return 0
+        if 0 <= idx < len(self._durations_ms):
+            return self._durations_ms[idx] / 1000.0
+        return 0.0
 
 
 # ─── 离线全局聚类 ───

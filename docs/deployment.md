@@ -146,7 +146,7 @@ docker run -d --gpus all \
   --model-size 0.6b --device auto --web
 ```
 
-`/app/data` 存放任务持久化库 `tasks.db` 与声纹库 `speakers.db`，挂出以跨容器重建保留（compose 已默认挂载）。CPU / ARM64 镜像（`latest-cpu` / `latest-arm64`）与更多数据卷说明见 [Docker Hub 页面](https://hub.docker.com/r/lancelrq/qwen3-asr-service)。
+`/app/data` 存放任务持久化库 `tasks.db` 与实时录音；共享声纹存储在外部 PostgreSQL/pgvector 中。compose 已默认挂载本地数据目录。CPU / ARM64 镜像（`latest-cpu` / `latest-arm64`）与更多数据卷说明见 [Docker Hub 页面](https://hub.docker.com/r/lancelrq/qwen3-asr-service)。
 
 ### 使用 docker-compose
 
@@ -159,6 +159,8 @@ docker compose -f docker/docker-compose.yml down
 ```
 
 `docker/docker-compose.yml` 中可配置启动参数、API 密钥、端口映射等，详见文件内注释。CPU 版编排见 `docker/docker-compose.cpu.yml`。
+
+声纹库使用独立的 pgvector compose，部署步骤和双服务共享配置见[声纹识别共享库部署与准确度方案](声纹识别共享库部署与准确度方案.md)。
 
 ### vLLM 原生流式镜像（独立）
 

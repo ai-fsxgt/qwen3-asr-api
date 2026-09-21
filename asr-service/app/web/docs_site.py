@@ -54,6 +54,7 @@ def _get_template() -> str | None:
 # api/v2/* 为 API v2 概览下的子文档，导航中缩进显示（见 _build_nav 的 sub 类）
 _NAV_ORDER = [
     "readme", "deployment", "configuration", "development",
+    "声纹识别共享库部署与准确度方案",
     "api/v2", "api/v2/basics", "api/v2/transcription", "api/v2/tasks", "api/v2/speakers",
     "api/v1", "api/compat", "api/compat/openai", "api/compat/dashscope", "architecture",
 ]
@@ -62,6 +63,7 @@ _NAV_TITLES = {
     "deployment": ("部署指南", "Deployment"),
     "configuration": ("配置文档", "Configuration"),
     "development": ("开发指南", "Development"),
+    "声纹识别共享库部署与准确度方案": ("共享声纹库", "Shared Voiceprints"),
     "api/v2": ("API v2（默认）", "API v2 (default)"),
     "api/v2/basics": ("基础接口", "Basics"),
     "api/v2/transcription": ("转写", "Transcription"),

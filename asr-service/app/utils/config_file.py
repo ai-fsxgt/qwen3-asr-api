@@ -1,6 +1,6 @@
 """YAML 配置文件：自动发现 / 引导生成 / 校验 / 优先级合并。
 
-优先级链（低→高）：schema 默认值 < 环境变量(ASR_API_KEY/MODEL_SOURCE) < 配置文件 < CLI 显式参数。
+优先级链（低→高）：schema 默认值 < 环境变量 < 配置文件 < CLI 显式参数。
 仅支持 YAML（config.yaml / config.yml）；键名 = CLI 长参数横线转下划线，扁平结构。
 设计文档：docs/plan/features/20260604_config_file/config-file-design.md §3
 """
@@ -293,13 +293,16 @@ def merge_runtime_config(cli_ns: argparse.Namespace) -> argparse.Namespace:
 
     merged = schema_defaults()
 
-    # ② 环境变量（存量两项，空值视为未设置）
+    # ② 环境变量（空值视为未设置）
     env_model_source = os.environ.get("MODEL_SOURCE")
     if env_model_source:
         merged["model_source"] = env_model_source
     env_api_key = os.environ.get("ASR_API_KEY")
     if env_api_key:
         merged["api_key"] = env_api_key
+    speaker_database_url = os.environ.get("SPEAKER_DATABASE_URL")
+    if speaker_database_url:
+        merged["speaker_database_url"] = speaker_database_url
 
     # ③ 配置文件
     path = resolve_config_path(config_arg, no_config)

@@ -3,34 +3,61 @@
 两种 serve-mode（standard / vllm）都挂载，使 vllm 模式在不提供离线接口时
 仍能通过 /health、/capabilities 暴露当前运行模式与能力。
 """
+import asyncio
 import logging
+from copy import deepcopy
+
 from fastapi import APIRouter, HTTPException
+
 from app.api.schemas import HealthResponse, CapabilitiesResponse
 
 logger = logging.getLogger(__name__)
 
 # 运行时依赖，由 main.py 启动时注入
 _service_info = None
+_speaker_store = None
 
 
-def init_common(service_info: dict):
+def init_common(service_info: dict, speaker_store=None):
     """注入服务信息（供 /health、/capabilities 读取）"""
-    global _service_info
+    global _service_info, _speaker_store
     _service_info = service_info
+    _speaker_store = speaker_store
+
+
+async def _get_runtime_service_info() -> dict:
+    if _service_info is None:
+        raise HTTPException(status_code=503, detail="服务尚未就绪，请稍后重试")
+
+    current_info = deepcopy(_service_info)
+    if _speaker_store is None or not current_info.get("speaker_db_enabled"):
+        return current_info
+
+    speaker_db_health = await asyncio.to_thread(_speaker_store.health)
+    if speaker_db_health.get("healthy"):
+        return current_info
+
+    current_info["speaker_db_enabled"] = False
+    current_info["speaker_db_backend"] = None
+    capabilities = current_info.get("capabilities")
+    if capabilities is not None:
+        capabilities["speaker_identification"] = False
+        capabilities["stream"]["speaker_identification"] = False
+    return current_info
 
 
 async def health_check() -> HealthResponse:
     """健康检查，返回当前运行模式和加载的模型信息（mode-aware）"""
-    if _service_info is None:
-        raise HTTPException(status_code=503, detail="服务尚未就绪，请稍后重试")
-    return HealthResponse(**_service_info)
+    current_info = await _get_runtime_service_info()
+    return HealthResponse(**current_info)
 
 
 async def get_capabilities() -> CapabilitiesResponse:
     """返回当前服务能力（运行模式、是否提供离线 API、实时流能力）"""
-    if _service_info is None or _service_info.get("capabilities") is None:
+    current_info = await _get_runtime_service_info()
+    if current_info.get("capabilities") is None:
         raise HTTPException(status_code=503, detail="服务尚未就绪，请稍后重试")
-    return CapabilitiesResponse.model_validate(_service_info["capabilities"])
+    return CapabilitiesResponse.model_validate(current_info["capabilities"])
 
 
 def build_common_router(prefix: str) -> APIRouter:

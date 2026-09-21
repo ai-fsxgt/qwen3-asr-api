@@ -100,7 +100,7 @@ def _mount_stream_recording_routes(app: FastAPI, manager) -> None:
 
 
 def _log_effective_config(args):
-    """启动时打印生效配置（四层合并结果），便于核对实际运行参数；api_key 脱敏。
+    """启动时打印生效配置；API 密钥和数据库连接地址脱敏。
 
     分组随 ArgSpec.group 声明走（新参数在定义处即归组）；None 值回填 cfg
     真实默认值并标注"(默认)"，model_size 标注"(自动选择)"（装配时按显存解析，
@@ -112,6 +112,8 @@ def _log_effective_config(args):
         val = getattr(args, spec.attr, None)
         if spec.key == "api_key" and val:
             val = (val[:4] + "****") if len(val) > 4 else "****"
+        elif spec.key == "speaker_database_url" and val:
+            val = "****"
         if val is None:
             if spec.key in _CFG_FALLBACK_ATTRS:
                 val = f"{getattr(cfg, _CFG_FALLBACK_ATTRS[spec.key])} (默认)"
@@ -219,15 +221,19 @@ def _apply_cli_config(args):
     if getattr(args, "speaker_max_windows", None) is not None:
         cfg.SPEAKER_MAX_WINDOWS = args.speaker_max_windows
     cfg.ENABLE_SPEAKER_DB = getattr(args, "enable_speaker_db", False)
-    if getattr(args, "speaker_db_path", None) is not None:
-        cfg.SPEAKER_DB_PATH = args.speaker_db_path
+    if getattr(args, "speaker_database_url", None) is not None:
+        cfg.SPEAKER_DATABASE_URL = args.speaker_database_url
     if getattr(args, "speaker_id_threshold", None) is not None:
         cfg.SPEAKER_ID_THRESHOLD = args.speaker_id_threshold
     if getattr(args, "speaker_id_margin", None) is not None:
         cfg.SPEAKER_ID_MARGIN = args.speaker_id_margin
+    if getattr(args, "speaker_identify_min_sec", None) is not None:
+        cfg.SPEAKER_IDENTIFY_MIN_SEC = args.speaker_identify_min_sec
+    if getattr(args, "speaker_realtime_confirmations", None) is not None:
+        cfg.SPEAKER_REALTIME_CONFIRMATIONS = args.speaker_realtime_confirmations
     if getattr(args, "speaker_enroll_min_sec", None) is not None:
         cfg.SPEAKER_ENROLL_MIN_SEC = args.speaker_enroll_min_sec
-    cfg.SPEAKER_AUTO_ENROLL = getattr(args, "speaker_auto_enroll", True)
+    cfg.SPEAKER_AUTO_ENROLL = getattr(args, "speaker_auto_enroll", False)
     if getattr(args, "speaker_auto_enroll_min_sec", None) is not None:
         cfg.SPEAKER_AUTO_ENROLL_MIN_SEC = args.speaker_auto_enroll_min_sec
     cfg.SPEAKER_STORE_AUDIO = getattr(args, "speaker_store_audio", False)
@@ -398,22 +404,23 @@ def _assemble_standard(app: FastAPI, args) -> None:
             from app.engines.speaker_embedding_engine import SpeakerEmbeddingEngine
             from app.runtime.speaker_store import SpeakerStore
             from app.runtime.speaker_service import SpeakerService
-            spk_db_path = cfg.SPEAKER_DB_PATH
-            if not os.path.isabs(spk_db_path):
-                spk_db_path = os.path.join(cfg.BASE_DIR, spk_db_path)
             try:
                 speaker_store = SpeakerStore(
-                    spk_db_path, model_tag=SpeakerEmbeddingEngine.MODEL_TAG)
+                    cfg.SPEAKER_DATABASE_URL,
+                    model_tag=SpeakerEmbeddingEngine.MODEL_TAG,
+                )
                 # ③ model_tag 失配：仅禁登记/识别（503），GET/DELETE 保留（被遗忘权）
                 speaker_tag_mismatch = not speaker_store.check_model_tag(
                     SpeakerEmbeddingEngine.MODEL_TAG)
                 if speaker_tag_mismatch:
                     logger.error("声纹库 model_tag 与当前引擎不一致：登记/识别已禁用，"
-                                 "管理端点保留（如需重建请删除库文件或迁移模板）")
+                                 "管理端点保留（请校验或迁移模板）")
                 speaker_service = SpeakerService(speaker_store, speaker_engine, vad_engine)
             except Exception as e:                       # ④ 建库失败
                 logger.error(f"声纹库初始化失败，已降级关闭: {e}")
                 speaker_service = None
+                if speaker_store is not None:
+                    speaker_store.close()
                 speaker_store = None
     speaker_db_enabled = speaker_service is not None and not speaker_tag_mismatch
     # 转写联动仅在识别可用时注入（失配 = 库内模板与当前引擎不可比，联动同样禁用）
@@ -538,6 +545,8 @@ def _assemble_standard(app: FastAPI, args) -> None:
             "speaker_max": cfg.SPEAKER_MAX,
             "speaker_id_threshold": cfg.SPEAKER_ID_THRESHOLD,
             "speaker_id_margin": cfg.SPEAKER_ID_MARGIN,
+            "speaker_identify_min_sec": cfg.SPEAKER_IDENTIFY_MIN_SEC,
+            "speaker_realtime_confirmations": cfg.SPEAKER_REALTIME_CONFIRMATIONS,
             "energy_floor_dbfs": cfg.STREAM_ENERGY_FLOOR_DBFS,
             "snr_min_db": cfg.STREAM_SNR_MIN_DB,
         },
@@ -551,6 +560,7 @@ def _assemble_standard(app: FastAPI, args) -> None:
         "punc_enabled": enable_punc,
         "speaker_enabled": speaker_enabled,
         "speaker_db_enabled": speaker_db_enabled,
+        "speaker_db_backend": "pgvector" if speaker_store is not None else None,
         "asr_backend": asr_backend,
         "vad_backend": VADEngine.BACKEND,
         "punc_backend": PuncEngine.BACKEND if enable_punc else "disabled",
@@ -559,7 +569,7 @@ def _assemble_standard(app: FastAPI, args) -> None:
     }
 
     # 共性路由（两模式都挂）
-    init_common(service_info)
+    init_common(service_info, speaker_store=speaker_store)
     app.include_router(build_common_router("/v1"))
     app.include_router(build_common_router("/v2"))
     _mount_stream_recording_routes(app, stream_recording_manager)
@@ -737,22 +747,23 @@ def _assemble_vllm(app: FastAPI, args) -> None:
             from app.engines.speaker_embedding_engine import SpeakerEmbeddingEngine
             from app.runtime.speaker_store import SpeakerStore
             from app.runtime.speaker_service import SpeakerService
-            spk_db_path = cfg.SPEAKER_DB_PATH
-            if not os.path.isabs(spk_db_path):
-                spk_db_path = os.path.join(cfg.BASE_DIR, spk_db_path)
             try:
                 speaker_store = SpeakerStore(
-                    spk_db_path, model_tag=SpeakerEmbeddingEngine.MODEL_TAG)
+                    cfg.SPEAKER_DATABASE_URL,
+                    model_tag=SpeakerEmbeddingEngine.MODEL_TAG,
+                )
                 # ③ model_tag 失配：仅禁登记/识别（503），GET/DELETE 保留（被遗忘权）
                 speaker_tag_mismatch = not speaker_store.check_model_tag(
                     SpeakerEmbeddingEngine.MODEL_TAG)
                 if speaker_tag_mismatch:
                     logger.error("声纹库 model_tag 与当前引擎不一致：登记/识别已禁用，"
-                                 "管理端点保留（如需重建请删除库文件或迁移模板）")
+                                 "管理端点保留（请校验或迁移模板）")
                 speaker_service = SpeakerService(speaker_store, speaker_engine, energy_vad)
             except Exception as e:                       # ④ 建库失败
                 logger.error(f"声纹库初始化失败，已降级关闭: {e}")
                 speaker_service = None
+                if speaker_store is not None:
+                    speaker_store.close()
                 speaker_store = None
     speaker_db_enabled = speaker_service is not None and not speaker_tag_mismatch
     # 转写联动仅在识别可用时注入（失配 = 库内模板与当前引擎不可比，联动同样禁用）
@@ -849,6 +860,8 @@ def _assemble_vllm(app: FastAPI, args) -> None:
             "speaker_max": cfg.SPEAKER_MAX,
             "speaker_id_threshold": cfg.SPEAKER_ID_THRESHOLD,
             "speaker_id_margin": cfg.SPEAKER_ID_MARGIN,
+            "speaker_identify_min_sec": cfg.SPEAKER_IDENTIFY_MIN_SEC,
+            "speaker_realtime_confirmations": cfg.SPEAKER_REALTIME_CONFIRMATIONS,
         },
         # 兼容接口（Phase 3）：据 --enable-openai-api/--enable-dashscope-api 实挂；vLLM 流式恒开，
         # 实时兼容随离线开关一并挂（无需 --enable-stream）。realtime_partial=R2 已下发增量
@@ -871,12 +884,13 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         "punc_enabled": True,        # 模型原生标点（恒有，不可单独关；详见能力对照文档）
         "speaker_enabled": speaker_enabled,
         "speaker_db_enabled": speaker_db_enabled,
+        "speaker_db_backend": "pgvector" if speaker_store is not None else None,
         "asr_backend": "vllm",
         "config_file": cfg.CONFIG_FILE,
         "capabilities": capabilities,
     }
 
-    init_common(service_info)
+    init_common(service_info, speaker_store=speaker_store)
     app.include_router(build_common_router("/v1"))
     app.include_router(build_common_router("/v2"))
     _mount_stream_recording_routes(app, stream_recording_manager)

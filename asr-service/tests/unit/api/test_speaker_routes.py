@@ -5,6 +5,7 @@ consent 缺失 400、ValueError→400 / SpeakerNotFoundError→404 /
 SpeakerClaimConflictError→409 / SpeakerStoreError→500 映射、multipart 多文件、
 认领幂等参数与剩 0 模板提示。
 """
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,15 +21,18 @@ from app.runtime.speaker_store import (
 )
 
 AUTH = {"Authorization": "Bearer test-key"}
+CREATED_AT = datetime(2026, 9, 20, 1, 2, 3, tzinfo=timezone.utc)
 
 SPEAKER_ROW = {
     "id": "a" * 32, "name": "张三", "note": None, "source": "manual",
-    "template_count": 2, "created_at": "t", "updated_at": "t",
+    "template_count": 2, "created_at": CREATED_AT, "updated_at": CREATED_AT,
 }
 SPEAKER_DETAIL = {
     "id": "a" * 32, "name": "张三", "note": "n", "source": "manual",
-    "model_tag": "campplus_cn_common@v1", "created_at": "t", "updated_at": "t",
-    "templates": [{"id": 1, "dur_sec": 5.0, "created_at": "t"}],
+    "model_tag": "campplus_cn_common@v1",
+    "created_at": CREATED_AT,
+    "updated_at": CREATED_AT,
+    "templates": [{"id": 1, "dur_sec": 5.0, "created_at": CREATED_AT}],
 }
 
 
@@ -232,6 +236,7 @@ def test_list_speakers():
     c = make_client(make_service())
     body = c.get("/v2/speakers", headers=AUTH).json()
     assert body["total"] == 1 and body["speakers"][0]["name"] == "张三"
+    assert body["speakers"][0]["created_at"] == "2026-09-20T01:02:03Z"
 
 
 def test_get_speaker_detail_and_404():
@@ -239,6 +244,7 @@ def test_get_speaker_detail_and_404():
     c = make_client(service)
     body = c.get(f"/v2/speakers/{'a'*32}", headers=AUTH).json()
     assert body["templates"][0]["dur_sec"] == 5.0
+    assert body["templates"][0]["created_at"] == "2026-09-20T01:02:03Z"
 
     service.store.get_speaker.return_value = None
     assert c.get("/v2/speakers/nope", headers=AUTH).status_code == 404

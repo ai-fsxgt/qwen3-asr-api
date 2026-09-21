@@ -8,15 +8,17 @@ services:
     #     - registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest
     ports:
       - "8765:8765"
-    # environment:                       # 需要时取消下面两行注释
-    #   - ASR_API_KEY=sk-your-key-here   # 设置后启用 Bearer token 认证
+    # environment:                       # 需要时取消下面配置
+    #   ASR_API_KEY: sk-your-key-here    # 设置后启用 Bearer token 认证
+    #   # 两个 ASR 服务填写同一个 PostgreSQL 地址，即可共享声纹；不要提交真实密码
+    #   SPEAKER_DATABASE_URL: postgresql://qwen3_asr:change-me@数据库IP:5432/qwen3_asr
     volumes:
       # config.yaml 须先存在（用根目录 manage.sh 引导，或从 config.example.yaml 拷贝）；
       # 缺失时 bind 挂载会创建空目录。容器内服务配置以此文件为准，可在宿主编辑、持久。
       - ../asr-service/config.yaml:/app/config.yaml
       - ../asr-service/models:/app/models
       - ../asr-service/logs:/app/logs
-      # 持久数据（任务库、声纹库、实时录音 data/stream_recordings）：挂出以跨重建保留
+      # 持久数据（任务库、实时录音 data/stream_recordings）：挂出以跨重建保留
       - ../asr-service/data:/app/data
     deploy:
       resources:

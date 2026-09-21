@@ -42,8 +42,10 @@ def isolated_create_app(tmp_path, monkeypatch):
             "STREAM_SAVE_AUDIO", "STREAM_RECORDINGS_DIR", "STREAM_RECORDING_RETENTION_HOURS",
             "CONFIG_FILE", "ENABLE_SPEAKER", "SPEAKER_THRESHOLD", "SPEAKER_MAX",
             "SPEAKER_MIN_SEG_MS", "SPEAKER_MAX_WINDOWS",
-            "ENABLE_SPEAKER_DB", "SPEAKER_DB_PATH", "SPEAKER_ID_THRESHOLD", "SPEAKER_ID_MARGIN",
-            "SPEAKER_ENROLL_MIN_SEC", "SPEAKER_AUTO_ENROLL", "SPEAKER_AUTO_ENROLL_MIN_SEC",
+            "ENABLE_SPEAKER_DB", "SPEAKER_DATABASE_URL", "SPEAKER_ID_THRESHOLD",
+            "SPEAKER_ID_MARGIN", "SPEAKER_IDENTIFY_MIN_SEC",
+            "SPEAKER_REALTIME_CONFIRMATIONS", "SPEAKER_ENROLL_MIN_SEC",
+            "SPEAKER_AUTO_ENROLL", "SPEAKER_AUTO_ENROLL_MIN_SEC",
             "SPEAKER_STORE_AUDIO")
     snapshot = {k: getattr(cfg, k) for k in keys}
 
@@ -630,9 +632,12 @@ def test_apply_cli_config_writes_stream(monkeypatch):
             setattr(cfg, k, v)
 
 
-def test_log_effective_config_masks_api_key(caplog):
+def test_log_effective_config_masks_secrets(caplog):
     from app.main import _log_effective_config
-    args = _args(api_key="sk-secret-123456")
+    args = _args(
+        api_key="sk-secret-123456",
+        speaker_database_url="postgresql://asr:db-secret@database/qwen3_asr",
+    )
     with caplog.at_level(logging.INFO, logger="app.main"):
         _log_effective_config(args)
     text = caplog.text
@@ -640,6 +645,7 @@ def test_log_effective_config_masks_api_key(caplog):
     assert "serve_mode" in text and "device" in text
     assert "sk-s****" in text                  # 脱敏后前缀可辨
     assert "sk-secret-123456" not in text      # 明文绝不落日志
+    assert "db-secret" not in text
 
 
 def test_log_effective_config_backfills_runtime_defaults(caplog):
@@ -861,13 +867,40 @@ class _OkSpeaker:
     def load(self): pass
 
 
+class _FakeSpeakerStore:
+    healthy = True
+
+    def __init__(self, *args, **kwargs):
+        self.store = self
+
+    def check_model_tag(self, engine_tag):
+        return True
+
+    def list_speakers(self):
+        return []
+
+    @property
+    def speaker_count(self):
+        return 0
+
+    def health(self):
+        return {
+            "healthy": self.healthy,
+            "backend": "pgvector",
+            "speaker_count": 0,
+        }
+
+    def close(self):
+        pass
+
+
 def test_speaker_db_degrades_without_speaker_engine(isolated_create_app, monkeypatch, tmp_path):
     """分支①：未开 enable_speaker → 声纹库降级关闭，服务正常。"""
     import app.main as main
     _mock_standard_engines(monkeypatch)
 
     app = main.create_app(_args(device="auto", enable_speaker_db=True, api_key="k",
-                                speaker_db_path=str(tmp_path / "spk.db")))
+                                speaker_database_url="postgresql://unused"))
     client = TestClient(app)
     health = client.get("/v2/health", headers={"Authorization": "Bearer k"}).json()
     assert health["status"] == "ready"
@@ -885,7 +918,7 @@ def test_speaker_db_degrades_without_api_key(isolated_create_app, monkeypatch, t
 
     app = main.create_app(_args(device="auto", enable_speaker=True,
                                 enable_speaker_db=True,
-                                speaker_db_path=str(tmp_path / "spk.db")))
+                                speaker_database_url="postgresql://unused"))
     client = TestClient(app)
     health = client.get("/v2/health").json()
     assert health["speaker_enabled"] is True            # 分离正常
@@ -899,11 +932,12 @@ def test_speaker_db_enabled_full_path(isolated_create_app, monkeypatch, tmp_path
     _mock_standard_engines(monkeypatch)
     monkeypatch.setattr(
         "app.engines.speaker_embedding_engine.SpeakerEmbeddingEngine", _OkSpeaker)
+    monkeypatch.setattr("app.runtime.speaker_store.SpeakerStore", _FakeSpeakerStore)
 
     app = main.create_app(_args(device="auto", enable_speaker=True, enable_stream=True,
                                 api_key="k",
                                 enable_speaker_db=True,
-                                speaker_db_path=str(tmp_path / "spk.db")))
+                                speaker_database_url="postgresql://unused"))
     client = TestClient(app)
     auth = {"Authorization": "Bearer k"}
     health = client.get("/v2/health", headers=auth).json()
@@ -913,6 +947,11 @@ def test_speaker_db_enabled_full_path(isolated_create_app, monkeypatch, tmp_path
     assert caps["stream"]["speaker_identification"] is True
     body = client.get("/v2/speakers", headers=auth).json()
     assert body == {"total": 0, "speakers": []}          # 空库可列
+
+    monkeypatch.setattr(_FakeSpeakerStore, "healthy", False)
+    health = client.get("/v2/health", headers=auth).json()
+    assert health["speaker_db_enabled"] is False
+    assert health["speaker_db_backend"] is None
 
 
 def test_speaker_db_degrades_on_store_failure(isolated_create_app, monkeypatch, tmp_path):
@@ -930,7 +969,7 @@ def test_speaker_db_degrades_on_store_failure(isolated_create_app, monkeypatch, 
 
     app = main.create_app(_args(device="auto", enable_speaker=True, api_key="k",
                                 enable_speaker_db=True,
-                                speaker_db_path=str(tmp_path / "spk.db")))
+                                speaker_database_url="postgresql://unused"))
     client = TestClient(app)
     auth = {"Authorization": "Bearer k"}
     health = client.get("/v2/health", headers=auth).json()
@@ -1001,10 +1040,11 @@ def test_vllm_mode_speaker_db_full_path(isolated_create_app, monkeypatch, tmp_pa
     _mock_vllm_engine(monkeypatch)
     monkeypatch.setattr(
         "app.engines.speaker_embedding_engine.SpeakerEmbeddingEngine", _OkSpeaker)
+    monkeypatch.setattr("app.runtime.speaker_store.SpeakerStore", _FakeSpeakerStore)
 
     app = main.create_app(_args(serve_mode="vllm", device="auto", enable_speaker=True,
                                 api_key="k", enable_speaker_db=True,
-                                speaker_db_path=str(tmp_path / "spk.db")))
+                                speaker_database_url="postgresql://unused"))
     client = TestClient(app)
     auth = {"Authorization": "Bearer k"}
     assert client.get("/v2/health", headers=auth).json()["speaker_db_enabled"] is True
@@ -1023,7 +1063,7 @@ def test_vllm_mode_speaker_db_degrades_without_api_key(isolated_create_app, monk
 
     app = main.create_app(_args(serve_mode="vllm", device="auto", enable_speaker=True,
                                 enable_speaker_db=True,
-                                speaker_db_path=str(tmp_path / "spk.db")))
+                                speaker_database_url="postgresql://unused"))
     client = TestClient(app)
     assert client.get("/v2/health").json()["speaker_db_enabled"] is False
     assert client.get("/v2/speakers").status_code == 503

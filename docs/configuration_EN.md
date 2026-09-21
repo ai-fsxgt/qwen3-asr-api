@@ -16,7 +16,7 @@ Higher layers override lower ones for the same parameter; **explicitly passed** 
 - [Config File (config.yaml)](#config-file-configyaml)
 - [Environment Variables](#environment-variables)
 - [Offline Task Persistence (tasks.db)](#offline-task-persistence-tasksdb)
-- [Speaker Diarization & Voiceprint Database (speakers.db)](#speaker-diarization--voiceprint-database-speakersdb)
+- [Speaker Diarization & Shared Voiceprint Database](#speaker-diarization--shared-voiceprint-database)
 - [vLLM Native Streaming Mode](#vllm-native-streaming-mode)
 - [Built-in Constants (app/config.py)](#built-in-constants-appconfigpy)
 
@@ -132,11 +132,13 @@ See [Transcription · Real-time Recording Download / Delete](api/v2/transcriptio
 | Parameter | Values | Default | Description |
 |-----------|--------|---------|-------------|
 | `--enable-speaker-db` / `--no-speaker-db` | - | Disabled | Voiceprint database (enrollment + real-name identification): requires `enable_speaker` and **must have `api_key` configured** (voiceprints are biometric data, no unauthenticated access allowed, otherwise the module automatically degrades and disables itself) |
-| `--speaker-db-path` | Path | `data/speakers.db` | Voiceprint database path (relative to the service root); **data is never auto-cleaned** |
+| `--speaker-database-url` | PostgreSQL URL | Empty | Shared PostgreSQL/pgvector connection URL; in production, prefer the `SPEAKER_DATABASE_URL` environment variable |
 | `--speaker-id-threshold` | 0–1 | `0.45` | 1:N open-set identification threshold; if the highest similarity is below this, the result is `unknown` |
 | `--speaker-id-margin` | 0–1 | `0.10` | top1-top2 margin; if the gap is smaller than this, the result is `unknown` (when neighbors compete, prefer omission over error) |
+| `--speaker-identify-min-sec` | Seconds | `5.0` | Minimum accumulated speech before querying the voiceprint database |
+| `--speaker-realtime-confirmations` | Number | `2` | Consecutive real-time matches required before exposing a name |
 | `--speaker-enroll-min-sec` | Seconds | `3.0` | Minimum effective speech per sample for manual enrollment (after VAD) |
-| `--speaker-auto-enroll` / `--no-speaker-auto-enroll` | - | Enabled | Auto-enroll unmatched speakers from offline identification as `Speaker_NN` (**enabling auto-enroll = the deployer declares data-subject consent has been obtained**) |
+| `--speaker-auto-enroll` / `--no-speaker-auto-enroll` | - | Disabled | Auto-enroll unmatched speakers from offline identification as `Speaker_NN` (**enabling auto-enroll = the deployer declares data-subject consent has been obtained**) |
 | `--speaker-auto-enroll-min-sec` | Seconds | `10.0` | Minimum total speech duration of a cluster for auto-enrollment (stricter than manual enrollment, to reduce noisy records) |
 | `--speaker-store-audio` / `--no-speaker-store-audio` | - | Disabled | Retain enrollment sample audio in `data/speaker_audio/` (widens the compliance surface, off by default) |
 
@@ -229,6 +231,7 @@ bash start.sh --no-config
 |----------|------------|-------------|
 | `ASR_API_KEY` | `api_key` | API key; lower priority than the config file and CLI (`api_key: ""` in the config file also overrides it — remove that line to use the env var) |
 | `MODEL_SOURCE` | `model_source` | Model download source |
+| `SPEAKER_DATABASE_URL` | `speaker_database_url` | PostgreSQL/pgvector connection URL; recommended to keep database passwords out of config files |
 
 Empty environment variables are treated as unset.
 
@@ -251,7 +254,7 @@ enable_task_store: true
 - Only text results and metadata are stored — **no original audio is retained**; persistence write failures are logged as warnings and never affect task execution.
 - Deleting `data/tasks.db` = clearing history without affecting functionality. For stricter content-retention requirements, lower `task_retention_days` or turn the switch off.
 
-## Speaker Diarization & Voiceprint Database (speakers.db)
+## Speaker Diarization & Shared Voiceprint Database
 
 ```yaml
 # config.yaml: enable diarization (anonymous labels)
@@ -262,13 +265,20 @@ enable_speaker_db: true
 api_key: "sk-your-key"
 ```
 
+Prefer passing the database URL through the environment:
+
+```bash
+export SPEAKER_DATABASE_URL='postgresql://qwen3_asr:strong-password@database-ip:5432/qwen3_asr'
+```
+
 ### Behavior
 
 - **Diarization**: anonymous labels `A`/`B`/`C`… scoped to a single file/session; the same person is not guaranteed the same label across tasks; any failure along the way only drops the label, transcription is unaffected.
 - **Voiceprint-database degradation matrix**: if any of the following conditions is not met, the module automatically degrades and disables itself (ERROR log + `/v2/speakers*` returns 503, while the service still starts normally): ① `enable_speaker` is on and the engine loads successfully; ② `api_key` is non-empty; ③ the database is created successfully. When stored templates do not match the current engine's `model_tag`, only enrollment/claiming/identification is disabled while viewing and deletion are retained (right to be forgotten).
-- **Data is never auto-cleaned**: `speakers.db` has no TTL (unlike tasks.db's 7-day cleanup) — voiceprints are a long-term accumulating asset, and identification gets more accurate the more they are used; the only way to delete is `DELETE /v2/speakers/{id}` (hard delete + physical reclamation) or deleting the database file.
-- **Auto-enrollment**: during offline transcription with `identify_speakers` enabled, speakers that miss the database and have sufficient speech (default ≥10s) are auto-enrolled as `说话人_NN` (Chinese for "Speaker_NN"); after renaming via `/web-ui/speakers` or `PATCH /v2/speakers/{id}`, subsequent transcriptions display the real name directly. When an external voiceprint profile needs to replace auto-generated templates with controlled samples, use `POST /v2/speakers/{id}/claim` to claim the record while preserving its `speaker_id`. The real-time path does not auto-enroll (online clustering drift easily causes duplicate records); matched speakers never get templates auto-appended either (to prevent sample poisoning) — add samples manually via `POST /v2/speakers/{id}/templates`.
-- **Compliance**: the enrollment endpoint enforces `consent=true` as double-insurance (endpoint + database constraint); enabling auto-enrollment means the deployer declares data-subject consent has been obtained; audio is not retained by default; the audit log is persisted alongside the database. **Backup = copy the single `data/speakers.db` file** (recommend including it in your regular backup plan); deleting the database completely erases all voiceprint data.
+- **Sharing and retention**: every service instance queries the same PostgreSQL/pgvector database directly, with no process-local full-library cache. Voiceprint data has no TTL and can only be removed through `DELETE /v2/speakers/{id}`. Back up the database and its data volume regularly.
+- **Auto-enrollment**: disabled by default. When `speaker_auto_enroll` is explicitly enabled, only unmatched offline clusters with enough speech (default ≥10s) are enrolled as `说话人_NN`. Real-time sessions never auto-enroll, and matched speakers never receive samples automatically. Use `POST /v2/speakers/{id}/templates` to add controlled samples.
+- **Accuracy guards**: identification starts after a cluster accumulates 5 seconds of speech by default; real-time names require two consecutive matches; results remain anonymous when top1 is below the threshold or the top1-top2 margin is insufficient.
+- **Compliance**: enrollment requires `consent=true`; enabling auto-enrollment asserts that data-subject consent has been obtained; audio retention is off by default; audit records are persisted in PostgreSQL.
 
 ## vLLM Native Streaming Mode
 

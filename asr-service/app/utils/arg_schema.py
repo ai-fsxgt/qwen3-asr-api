@@ -415,11 +415,11 @@ ARG_SPECS = (
         negative_help_en="Disable voiceprint DB (overrides config file)",
     ),
     ArgSpec(
-        key="speaker_db_path", flags=("--speaker-db-path",), default="data/speakers.db",
+        key="speaker_database_url", flags=("--speaker-database-url",), default="",
         group="声纹库",
-        help="声纹库路径，相对服务根目录；数据永不自动清理 (default: data/speakers.db)",
-        help_en="Voiceprint DB path, relative to the service root; data is never "
-                "auto-cleaned (default: data/speakers.db)",
+        help="共享 PostgreSQL/pgvector 连接地址；推荐通过 SPEAKER_DATABASE_URL 环境变量配置",
+        help_en="Shared PostgreSQL/pgvector URL; SPEAKER_DATABASE_URL environment "
+                "variable is recommended",
     ),
     ArgSpec(
         key="speaker_id_threshold", flags=("--speaker-id-threshold",), default=0.45, type=float,
@@ -436,6 +436,22 @@ ARG_SPECS = (
                 "over error) (default: 0.10)",
     ),
     ArgSpec(
+        key="speaker_identify_min_sec", flags=("--speaker-identify-min-sec",),
+        default=5.0, type=float, min_value=0.1, group="声纹库",
+        help="簇累计有效语音达到该时长后才查询声纹库 (default: 5.0)",
+        help_en="Min accumulated speech seconds before voiceprint lookup "
+                "(default: 5.0)",
+    ),
+    ArgSpec(
+        key="speaker_realtime_confirmations",
+        flags=("--speaker-realtime-confirmations",), default=2, type=int,
+        min_value=1,
+        group="声纹库",
+        help="实时连续命中相同身份多少次后展示姓名 (default: 2)",
+        help_en="Consecutive matching realtime lookups before exposing a name "
+                "(default: 2)",
+    ),
+    ArgSpec(
         key="speaker_enroll_min_sec", flags=("--speaker-enroll-min-sec",), default=3.0, type=float,
         group="声纹库",
         help="手动登记单样本最短有效语音秒数（VAD 后） (default: 3.0)",
@@ -443,9 +459,9 @@ ARG_SPECS = (
                 "(post-VAD) (default: 3.0)",
     ),
     ArgSpec(
-        key="speaker_auto_enroll", flags=("--speaker-auto-enroll",), default=True, type=bool,
+        key="speaker_auto_enroll", flags=("--speaker-auto-enroll",), default=False, type=bool,
         group="声纹库",
-        help="离线识别未命中的簇自动以「说话人_NN」登记（开启=部署方声明已获数据主体同意）",
+        help="离线识别未命中的簇自动登记；默认关闭（开启=部署方声明已获数据主体同意）",
         help_en="Auto-enroll unmatched offline clusters as 'Speaker_NN' "
                 "(enabling = deployer asserts data-subject consent obtained)",
         negative_flags=("--no-speaker-auto-enroll",), negative_help="关闭自动登记（覆盖配置文件）",

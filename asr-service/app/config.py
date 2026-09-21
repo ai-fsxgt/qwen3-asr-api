@@ -171,11 +171,13 @@ SPEAKER_MAX_WINDOWS = 4000      # 离线滑窗数上限，超出均匀抽稀（�
 # ─── 声纹库 ───
 
 ENABLE_SPEAKER_DB = False           # 总开关（依赖 enable_speaker 引擎加载成功 + api_key 非空）
-SPEAKER_DB_PATH = "data/speakers.db"
+SPEAKER_DATABASE_URL = os.environ.get("SPEAKER_DATABASE_URL", "")
 SPEAKER_ID_THRESHOLD = 0.45         # 1:N 开集识别阈 τ_id（严于官方 1:1 验证阈 0.31）
 SPEAKER_ID_MARGIN = 0.10            # top1-top2 margin δ（近邻打架时宁缺勿错）
+SPEAKER_IDENTIFY_MIN_SEC = 5.0      # 簇累计有效语音不足时保持匿名
+SPEAKER_REALTIME_CONFIRMATIONS = 2  # 实时连续命中次数，达到后才展示姓名
 SPEAKER_ENROLL_MIN_SEC = 3.0        # 手动登记单样本最短有效语音（VAD 后，秒）
-SPEAKER_AUTO_ENROLL = True          # 离线 identify 未命中簇自动以「说话人_NN」占位名登记
+SPEAKER_AUTO_ENROLL = False         # 默认禁止把未知说话人自动写入生物识别库
 SPEAKER_AUTO_ENROLL_MIN_SEC = 10.0  # 自动登记的簇最短语音总时长（严于手动登记）
 SPEAKER_STORE_AUDIO = False         # 留存登记样本音频（扩大合规面，默认关）
 

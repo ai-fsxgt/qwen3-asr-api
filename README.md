@@ -12,7 +12,7 @@ A simple, fast and efficient speech recognition API service based on Qwen3-ASR. 
 - **Real-time Transcription** - WebSocket streaming endpoint, sentence-by-sentence results for microphone / streamed audio
 - **vLLM Native Streaming Engine** *(new in v2.1.0, optional)* - a separate GPU-only serving mode (`--serve-mode vllm`) with real-time incremental partial→final decoding within each sentence, plus long-audio chunked transcription — see [vLLM vs Standard](docs/vllm-vs-standard_EN.md)
 - **Speaker Diarization** - Offline / real-time transcripts annotated with anonymous speaker labels A/B/C… (CAM++ voiceprint model, CPU inference)
-- **Voiceprint Database** - Enrolled speakers show their real names in transcripts; unknown speakers are auto-enrolled with placeholder names, with one-click rename in the Web management page (speakers.db, authentication required)
+- **Shared Voiceprint Database** - Multiple services share voiceprints through PostgreSQL/pgvector; enrolled speakers show real names, while unknown speakers are not auto-enrolled by default (authentication required)
 - **Far-field Filtering / Tunable Params** - Real-time segment-level energy/SNR gating reduces far-field and ambient false triggers; speaker, endpointing and output params can be overridden per request/session
 - **OpenAI / DashScope Compatible APIs** - Point your base_url at this service to integrate the OpenAI / Alibaba Cloud DashScope ecosystem (offline + realtime) — no business-code changes
 - **Async Tasks + Persistence** - Submit and poll for results; task results queryable across restarts (tasks.db)

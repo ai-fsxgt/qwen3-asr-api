@@ -218,7 +218,7 @@ async def update_speaker(speaker_id: str, body: SpeakerUpdateRequest) -> Speaker
 
 
 async def delete_speaker(speaker_id: str) -> SpeakerDeleteResponse:
-    """硬删除（级联模板 + 物理回收 + 留存音频清理，不可恢复——被遗忘权）。"""
+    """硬删除数据库记录与级联模板，并清理留存音频。"""
     service = _require_service()
     await _run(service.delete_speaker, speaker_id)
     return SpeakerDeleteResponse(speaker_id=speaker_id)
@@ -242,7 +242,7 @@ async def delete_template(speaker_id: str, template_id: int) -> TemplateDeleteRe
     remaining = await _run(service.store.delete_template, speaker_id, template_id)
     hint = None
     if remaining == 0:
-        hint = "该说话人已无模板，识别仍使用最后一次质心；请追加样本或删除该说话人"
+        hint = "该说话人已无模板，不再参与声纹识别；请追加样本或删除该说话人"
     return TemplateDeleteResponse(speaker_id=speaker_id, template_id=template_id,
                                   remaining=remaining, hint=hint)
 

@@ -68,11 +68,13 @@ enable_speaker: false       # 离线 segment.speaker / 实时 final.speaker（�
 
 # ── 声纹库（登记 + 真名识别）──
 enable_speaker_db: false    # 依赖 enable_speaker 且必须配置 api_key（声纹属生物识别信息）；数据永不自动清理
-# speaker_db_path: data/speakers.db
+# speaker_database_url: postgresql://qwen3_asr:change-me@数据库IP:5432/qwen3_asr
 # speaker_id_threshold: 0.45      # 1:N 开集识别阈 τ_id（低于此为 unknown）
 # speaker_id_margin: 0.10         # top1-top2 margin（近邻打架判 unknown，宁缺勿错）
+# speaker_identify_min_sec: 5.0   # 簇累计有效语音达到该时长后才查询声纹库
+# speaker_realtime_confirmations: 2  # 实时连续命中相同身份 2 次后才展示姓名
 # speaker_enroll_min_sec: 3.0     # 手动登记单样本最短有效语音（VAD 后，秒）
-# speaker_auto_enroll: true       # 离线识别未命中簇自动以「说话人_NN」登记（开启=部署方声明已获数据主体同意）
+# speaker_auto_enroll: false      # 默认不把未知说话人自动写入生物识别库
 # speaker_auto_enroll_min_sec: 10.0  # 自动登记的簇最短语音总时长（秒）
 # speaker_store_audio: false      # 留存登记样本音频（扩大合规面）
 

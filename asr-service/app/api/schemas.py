@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -48,7 +50,7 @@ class StreamRecordingDeleteResponse(BaseModel):
 class SpeakerTemplateInfo(BaseModel):
     id: int
     dur_sec: float
-    created_at: str
+    created_at: datetime
 
 
 class SpeakerInfo(BaseModel):
@@ -59,8 +61,8 @@ class SpeakerInfo(BaseModel):
     template_count: int | None = None  # 列表项携带
     model_tag: str | None = None       # 详情携带
     templates: list[SpeakerTemplateInfo] | None = None   # 详情携带（不含向量本体）
-    created_at: str
-    updated_at: str | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
 
 
 class SpeakerListResponse(BaseModel):
@@ -81,6 +83,9 @@ class IdentifyResponse(BaseModel):
     name: str | None = None
     source: str | None = None
     score: float | None = None
+    top2_score: float | None = None
+    margin: float | None = None
+    reason: str | None = None
 
 
 class SpeakerClaimResponse(BaseModel):
@@ -143,6 +148,7 @@ class HealthResponse(BaseModel):
     punc_enabled: bool = False
     speaker_enabled: bool = False
     speaker_db_enabled: bool = False
+    speaker_db_backend: str | None = None  # 当前仅 "pgvector"
     asr_backend: str | None = None     # "qwen_asr" | "openvino"
     vad_backend: str | None = None     # "pytorch" | "onnx"
     punc_backend: str | None = None    # "pytorch" | "onnx"

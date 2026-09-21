@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: registry.cn-hangzhou.aliyuncs.com/ripper/pgvector:pg16
+    container_name: qwen3-asr-postgres
+    restart: always
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-qwen3_asr}
+      POSTGRES_USER: ${POSTGRES_USER:-qwen3_asr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?必须设置 POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-qwen3_asr} -d ${POSTGRES_DB:-qwen3_asr}",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres_data:

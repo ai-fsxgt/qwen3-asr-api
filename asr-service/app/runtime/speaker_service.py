@@ -21,7 +21,11 @@ import app.config as cfg
 from app.engines.speaker_embedding_engine import make_windows
 from app.pipeline.audio_preprocessor import convert_to_wav
 from app.runtime.speaker_cluster import cluster_offline
-from app.runtime.speaker_store import SpeakerStore, SpeakerStoreError
+from app.runtime.speaker_store import (
+    SpeakerIdentification,
+    SpeakerStore,
+    SpeakerStoreError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +43,14 @@ class SpeakerService:
 
     # ─── 内部：单文件 → 模板向量 ───
 
-    def _embed_file(self, file_path: str, *, keep_wav: bool = False,
-                    purpose: str = "登记") -> tuple[np.ndarray, float, str | None]:
+    def _embed_file(
+        self,
+        file_path: str,
+        *,
+        keep_wav: bool = False,
+        purpose: str = "登记",
+        min_sec: float | None = None,
+    ) -> tuple[np.ndarray, float, str | None]:
         """转换 → VAD → 时长门槛 → 单人校验 → 窗均值模板。
 
         返回 (L2 归一模板向量, 有效语音秒数, 留存的 wav 路径或 None)。
@@ -53,9 +63,12 @@ class SpeakerService:
             convert_to_wav(file_path, wav_path)
             segments = self._vad.detect(wav_path)
             dur = sum(e - s for s, e in segments) / 1000.0
-            if dur < cfg.SPEAKER_ENROLL_MIN_SEC:
+            required_sec = (
+                cfg.SPEAKER_ENROLL_MIN_SEC if min_sec is None else min_sec
+            )
+            if dur < required_sec:
                 raise ValueError(
-                    f"{purpose}样本有效语音不足（{dur:.1f}s < {cfg.SPEAKER_ENROLL_MIN_SEC}s），"
+                    f"{purpose}样本有效语音不足（{dur:.1f}s < {required_sec}s），"
                     "请提供更长的清晰人声"
                 )
             wav, _sr = sf.read(wav_path, dtype="float32")
@@ -265,7 +278,7 @@ class SpeakerService:
         return {"speaker_id": speaker_id, "templates": len(info["templates"]) if info else 0}
 
     def delete_speaker(self, speaker_id: str) -> None:
-        """硬删除（库 + 留存音频目录同步清理——被遗忘权完整覆盖）。"""
+        """删除数据库记录并清理留存音频目录。"""
         with self._speaker_data_lock:
             self.store.delete_speaker(speaker_id)
             audio_dir = self._audio_dir(speaker_id)
@@ -274,16 +287,34 @@ class SpeakerService:
 
     def identify_file(self, file_path: str) -> dict:
         """单文件 1:N 识别。"""
-        vec, dur, _ = self._embed_file(file_path, keep_wav=False, purpose="识别")
-        hit = self.store.identify(vec, threshold=cfg.SPEAKER_ID_THRESHOLD,
-                                  margin=cfg.SPEAKER_ID_MARGIN,
-                                  include_source=True)
-        self.store.audit("identify", hit["speaker_id"] if hit else None,
-                         {"matched": hit is not None,
-                          "score": hit["score"] if hit else None, "via": "file"})
+        vec, dur, _ = self._embed_file(
+            file_path,
+            keep_wav=False,
+            purpose="识别",
+            min_sec=cfg.SPEAKER_IDENTIFY_MIN_SEC,
+        )
+        decision = self.store.identify_detailed(
+            vec,
+            threshold=cfg.SPEAKER_ID_THRESHOLD,
+            margin=cfg.SPEAKER_ID_MARGIN,
+        )
+        self._audit_identification(decision, via="file", duration_sec=dur)
+        hit = decision.as_match(include_source=True)
         if hit is None:
-            return {"matched": False}
-        return {"matched": True, **hit}
+            return {
+                "matched": False,
+                "reason": decision.reason,
+                "score": decision.top1_score,
+                "top2_score": decision.top2_score,
+                "margin": decision.margin,
+            }
+        return {
+            "matched": True,
+            **hit,
+            "reason": decision.reason,
+            "top2_score": decision.top2_score,
+            "margin": decision.margin,
+        }
 
     # ─── 转写联动路径（永不抛错，失败退回匿名）───
 
@@ -291,12 +322,138 @@ class SpeakerService:
     def _anon(label: str) -> dict:
         return {"label": label, "speaker_id": None, "name": None, "score": None}
 
+    def _audit_identification(
+        self,
+        decision: SpeakerIdentification,
+        *,
+        via: str,
+        duration_sec: float,
+        label: str | None = None,
+        threshold: float | None = None,
+        required_margin: float | None = None,
+    ) -> None:
+        self.store.audit(
+            "identify",
+            decision.speaker_id if decision.matched else None,
+            {
+                "matched": decision.matched,
+                "reason": decision.reason,
+                "top1_score": decision.top1_score,
+                "top2_score": decision.top2_score,
+                "margin": decision.margin,
+                "threshold": (
+                    cfg.SPEAKER_ID_THRESHOLD if threshold is None else threshold
+                ),
+                "required_margin": (
+                    cfg.SPEAKER_ID_MARGIN
+                    if required_margin is None
+                    else required_margin
+                ),
+                "duration_sec": duration_sec,
+                "label": label,
+                "via": via,
+            },
+        )
+
+    def _identify_cluster(
+        self,
+        cluster: dict,
+        *,
+        threshold: float,
+        margin: float,
+        via: str,
+    ) -> dict | None:
+        label = cluster.get("label", "?")
+        duration_sec = float(cluster.get("dur_sec") or 0.0)
+        if duration_sec < cfg.SPEAKER_IDENTIFY_MIN_SEC:
+            decision = SpeakerIdentification(False, "insufficient_duration")
+        else:
+            decision = self.store.identify_detailed(
+                cluster["centroid"],
+                threshold=threshold,
+                margin=margin,
+            )
+        self._audit_identification(
+            decision,
+            via=via,
+            duration_sec=duration_sec,
+            label=label,
+            threshold=threshold,
+            required_margin=margin,
+        )
+        return decision.as_match()
+
+    def _identify_or_enroll_cluster(
+        self,
+        cluster: dict,
+        *,
+        threshold: float,
+        margin: float,
+        cancelled=None,
+    ) -> dict | None:
+        """先无锁识别，未命中时由存储层跨实例串行复查并登记。"""
+        label = cluster.get("label", "?")
+        duration_sec = float(cluster.get("dur_sec") or 0.0)
+        decision = self.store.identify_detailed(
+            cluster["centroid"],
+            threshold=threshold,
+            margin=margin,
+        )
+        if cancelled and cancelled():
+            return None
+        hit = decision.as_match()
+        if hit is not None:
+            self._audit_identification(
+                decision,
+                via="offline",
+                duration_sec=duration_sec,
+                label=label,
+                threshold=threshold,
+                required_margin=margin,
+            )
+            return {"label": label, **hit}
+
+        auto_enroll_options = {
+            "threshold": threshold,
+            "margin": margin,
+        }
+        if cancelled is not None:
+            auto_enroll_options["cancelled"] = cancelled
+        enrollment = self.store.identify_or_enroll_auto(
+            cluster["centroid"],
+            duration_sec,
+            **auto_enroll_options,
+        )
+        if enrollment is None:
+            return None
+        self._audit_identification(
+            enrollment.identification,
+            via="offline",
+            duration_sec=duration_sec,
+            label=label,
+            threshold=threshold,
+            required_margin=margin,
+        )
+        if not enrollment.created:
+            hit = enrollment.identification.as_match()
+            if hit is None:
+                return self._anon(label)
+            return {"label": label, **hit}
+        return {
+            "label": label,
+            "speaker_id": enrollment.speaker_id,
+            "name": enrollment.name,
+            "score": None,
+            "auto_enrolled": True,
+        }
+
     def map_clusters(self, clusters: list[dict], *,
                      id_threshold: float | None = None,
                      id_margin: float | None = None) -> list[dict]:
         """实时联动入口（仅识别，不自动登记）。
 
-        clusters = [{"label", "centroid"}]；返回每簇 {"label","speaker_id","name","score"}，
+        clusters = [{"label", "centroid", "dur_sec"}]；返回每簇
+        {"label","speaker_id","name","score"}，
         未命中/任何异常 → 该簇 speaker_id/name=None（识别失败永远优雅退回匿名）。
         id_threshold/id_margin 缺省=服务端 cfg（支持按会话覆盖）。
         """
@@ -306,11 +463,12 @@ class SpeakerService:
         for c in clusters:
             label = c.get("label", "?")
             try:
-                hit = self.store.identify(c["centroid"], threshold=thr, margin=mgn)
-                self.store.audit("identify", hit["speaker_id"] if hit else None,
-                                 {"matched": hit is not None,
-                                  "score": hit["score"] if hit else None,
-                                  "label": label, "via": "stream"})
+                hit = self._identify_cluster(
+                    c,
+                    threshold=thr,
+                    margin=mgn,
+                    via="stream",
+                )
                 out.append({"label": label, **hit} if hit else self._anon(label))
             except Exception as e:
                 logger.warning(f"簇识别失败，退回匿名: {e}")
@@ -327,7 +485,7 @@ class SpeakerService:
         speaker_auto_enroll 且簇语音总时长过门槛 → 以「说话人_NN」占位名登记
         （source='auto'；开启自动登记 = 部署方声明已获数据主体同意，consent 同责）。
         已命中的说话人不自动追加模板（防投毒）。登记失败退回匿名，不影响转写。
-        识别与可能的自动登记在同一服务锁内完成，避免并发任务重复建档。
+        自动登记由 PostgreSQL 事务锁跨服务串行化，避免并发任务重复建档。
         id_threshold/id_margin 缺省=服务端 cfg（支持按请求覆盖）。
         cancelled 触发后停止处理剩余簇，返回已完成的映射。
         """
@@ -342,45 +500,33 @@ class SpeakerService:
                 with self._speaker_data_lock:
                     if cancelled and cancelled():
                         break
-                    hit = self.store.identify(
-                        c["centroid"], threshold=thr, margin=mgn
-                    )
-                    if cancelled and cancelled():
-                        break
-                    if hit:
-                        mapping = {"label": label, **hit}
+                    dur = float(c.get("dur_sec") or 0.0)
+                    if (
+                        cfg.SPEAKER_AUTO_ENROLL
+                        and dur >= cfg.SPEAKER_IDENTIFY_MIN_SEC
+                        and dur >= cfg.SPEAKER_AUTO_ENROLL_MIN_SEC
+                    ):
+                        mapping = self._identify_or_enroll_cluster(
+                            c,
+                            threshold=thr,
+                            margin=mgn,
+                            cancelled=cancelled,
+                        )
+                        if mapping is None:
+                            break
                     else:
-                        dur = float(c.get("dur_sec") or 0.0)
-                        if (
-                            cfg.SPEAKER_AUTO_ENROLL
-                            and dur >= cfg.SPEAKER_AUTO_ENROLL_MIN_SEC
-                        ):
-                            if cancelled and cancelled():
-                                break
-                            name = self.store.alloc_auto_name()
-                            if cancelled and cancelled():
-                                break
-                            sid = self.store.enroll_speaker(
-                                name,
-                                None,
-                                [np.asarray(c["centroid"], dtype=np.float32)],
-                                [dur],
-                                consent=True,
-                                source="auto",
-                            )
-                            mapping = {
-                                "label": label,
-                                "speaker_id": sid,
-                                "name": name,
-                                "score": None,
-                                "auto_enrolled": True,
-                            }
+                        hit = self._identify_cluster(
+                            c,
+                            threshold=thr,
+                            margin=mgn,
+                            via="offline",
+                        )
+                        if cancelled and cancelled():
+                            break
+                        if hit:
+                            mapping = {"label": label, **hit}
                         else:
                             mapping = self._anon(label)
-                self.store.audit("identify", hit["speaker_id"] if hit else None,
-                                 {"matched": hit is not None,
-                                  "score": hit["score"] if hit else None,
-                                  "label": label, "via": "offline"})
                 out.append(mapping)
             except Exception as e:
                 logger.warning(f"簇识别/自动登记失败，退回匿名: {e}")
