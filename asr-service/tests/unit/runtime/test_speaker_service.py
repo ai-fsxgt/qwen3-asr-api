@@ -237,6 +237,19 @@ class FakeSpeakerStore:
         with self._lock:
             return self._identify_locked(vector, threshold, margin)
 
+    def identify_many_detailed(
+        self,
+        vectors,
+        threshold=0.45,
+        margin=0.10,
+    ):
+        self._ensure_open()
+        with self._lock:
+            return [
+                self._identify_locked(vector, threshold, margin)
+                for vector in vectors
+            ]
+
     def identify(
         self,
         vector,
@@ -610,8 +623,16 @@ def test_map_clusters_never_auto_enrolls(env, store):
 
 # ─── map_and_enroll_clusters（离线联动：识别 + 自动登记）───
 
-def _cluster(label, vec, dur):
-    return {"label": label, "centroid": vec, "dur_sec": dur}
+def _cluster(label, vec, dur, evidence=None):
+    return {
+        "label": label,
+        "centroid": vec,
+        "dur_sec": dur,
+        "evidence": (
+            [{"embedding": vec, "dur_sec": dur}]
+            if evidence is None else evidence
+        ),
+    }
 
 
 def test_auto_enroll_above_threshold(env, store, monkeypatch):
@@ -661,6 +682,38 @@ def test_offline_short_cluster_stays_anonymous_even_when_voiceprint_matches(
     svc = make_service(store)
     svc.enroll("张三", None, [_src(env)], consent=True)
     out = svc.map_and_enroll_clusters([_cluster("A", unit(0), 4.0)])
+    assert out == [
+        {"label": "A", "speaker_id": None, "name": None, "score": None}
+    ]
+
+
+def test_offline_missing_evidence_does_not_fallback_to_centroid(env, store):
+    store.enroll_speaker("张三", None, [unit(0)], [6.0], consent=True)
+    svc = make_service(store)
+    out = svc.map_and_enroll_clusters([{
+        "label": "A",
+        "centroid": unit(0),
+        "dur_sec": 12.0,
+    }])
+    assert out == [
+        {"label": "A", "speaker_id": None, "name": None, "score": None}
+    ]
+
+
+def test_offline_inconsistent_evidence_stays_anonymous(env, store):
+    store.enroll_speaker("甲", None, [unit(0)], [6.0], consent=True)
+    store.enroll_speaker("乙", None, [unit(1)], [6.0], consent=True)
+    svc = make_service(store)
+    centroid = (unit(0) + unit(1)) / np.sqrt(2)
+    out = svc.map_and_enroll_clusters([_cluster(
+        "A",
+        centroid,
+        10.0,
+        evidence=[
+            {"embedding": unit(0), "dur_sec": 5.0},
+            {"embedding": unit(1), "dur_sec": 5.0},
+        ],
+    )])
     assert out == [
         {"label": "A", "speaker_id": None, "name": None, "score": None}
     ]

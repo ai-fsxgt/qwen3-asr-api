@@ -515,84 +515,81 @@ class FakeSpeakerService:
                  "name": name, "score": 0.6}]
 
 
-def _three_finals_svad():
+def _speaker_finals_svad(count=8):
     return FakeSVAD(events_by_call={
-        0: [{"type": "complete", "start": 0, "end": 3000}],
-        1: [{"type": "complete", "start": 3000, "end": 6000}],
-        2: [{"type": "complete", "start": 6000, "end": 9000}],
-        3: [{"type": "complete", "start": 9000, "end": 12000}],
-        4: [{"type": "complete", "start": 12000, "end": 15000}],
+        index: [{
+            "type": "complete",
+            "start": index * 3000,
+            "end": (index + 1) * 3000,
+        }]
+        for index in range(count)
     })
 
 
 async def test_final_carries_speaker_name():
     service = FakeSpeakerService()
-    s, asr, ex = _make_session(_three_finals_svad(), speaker=FakeSpeakerEngine(),
-                               speaker_service=service, identify=True)
-    try:
-        finals = []
-        for _ in range(3):
-            finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
-        assert [msg["speaker"] for msg in finals] == ["A", "A", "A"]
-        assert "speaker_name" not in finals[0]
-        assert "speaker_name" not in finals[1]
-        assert finals[2]["speaker_name"] == "张三"
-    finally:
-        ex.shutdown(wait=False)
-
-
-async def test_shared_store_is_queried_for_every_eligible_segment():
-    """累计 5 秒后每段直查共享库，不保留数据库内容缓存。"""
-    service = FakeSpeakerService()
-    s, asr, ex = _make_session(_three_finals_svad(), speaker=FakeSpeakerEngine(),
+    s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
                                speaker_service=service, identify=True)
     try:
         finals = []
         for _ in range(4):
             finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
-        assert service.calls == 3
-        assert "speaker_name" not in finals[0]
-        assert "speaker_name" not in finals[1]
-        assert finals[2]["speaker_name"] == "张三"
-        assert finals[3]["speaker_name"] == "张三"
-    finally:
-        ex.shutdown(wait=False)
-
-
-async def test_unknown_then_hit_progression():
-    """早期 unknown → 质心稳定后命中（以最新 final 为准，不回改历史）。"""
-    service = FakeSpeakerService(names=(None, "张三", "张三"))
-    s, asr, ex = _make_session(_three_finals_svad(), speaker=FakeSpeakerEngine(),
-                               speaker_service=service, identify=True)
-    try:
-        finals = []
-        for _ in range(4):
-            finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
+        assert [msg["speaker"] for msg in finals] == ["A"] * 4
         assert all("speaker_name" not in msg for msg in finals[:3])
         assert finals[3]["speaker_name"] == "张三"
     finally:
         ex.shutdown(wait=False)
 
 
-async def test_two_unknown_results_revoke_confirmed_name():
-    service = FakeSpeakerService(names=("张三", "张三", None, None))
-    s, asr, ex = _make_session(_three_finals_svad(), speaker=FakeSpeakerEngine(),
+async def test_shared_store_is_queried_for_each_independent_evidence_batch():
+    """每累计一批新的 5 秒证据才直查共享库，不重复使用历史证据。"""
+    service = FakeSpeakerService()
+    s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
                                speaker_service=service, identify=True)
     try:
         finals = []
-        for _ in range(5):
+        for _ in range(4):
+            finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
+        assert service.calls == 2
+        assert all("speaker_name" not in msg for msg in finals[:3])
+        assert finals[3]["speaker_name"] == "张三"
+    finally:
+        ex.shutdown(wait=False)
+
+
+async def test_unknown_then_hit_progression():
+    """早期 unknown → 后续两批独立证据命中后展示姓名。"""
+    service = FakeSpeakerService(names=(None, "张三", "张三"))
+    s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
+                               speaker_service=service, identify=True)
+    try:
+        finals = []
+        for _ in range(6):
+            finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
+        assert all("speaker_name" not in msg for msg in finals[:5])
+        assert finals[5]["speaker_name"] == "张三"
+    finally:
+        ex.shutdown(wait=False)
+
+
+async def test_two_unknown_results_revoke_confirmed_name():
+    service = FakeSpeakerService(names=("张三", "张三", None, None))
+    s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
+                               speaker_service=service, identify=True)
+    try:
+        finals = []
+        for _ in range(8):
             finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
         assert service.calls == 4
-        assert finals[2]["speaker_name"] == "张三"
-        assert finals[3]["speaker_name"] == "张三"
-        assert "speaker_name" not in finals[4]
+        assert all(msg["speaker_name"] == "张三" for msg in finals[3:7])
+        assert "speaker_name" not in finals[7]
     finally:
         ex.shutdown(wait=False)
 
 
 async def test_identify_off_no_name_no_query():
     service = FakeSpeakerService()
-    s, asr, ex = _make_session(_three_finals_svad(), speaker=FakeSpeakerEngine(),
+    s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
                                speaker_service=service, identify=False)
     try:
         msgs = await _collect(s.feed_audio(_pcm_ms(3000)))
@@ -603,7 +600,7 @@ async def test_identify_off_no_name_no_query():
 
 
 async def test_identify_without_service_no_name():
-    s, asr, ex = _make_session(_three_finals_svad(), speaker=FakeSpeakerEngine(),
+    s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
                                identify=True)           # 未注入 service
     try:
         msgs = await _collect(s.feed_audio(_pcm_ms(3000)))
@@ -618,7 +615,7 @@ async def test_identify_service_error_degrades():
         def map_clusters(self, clusters, *, id_threshold=None, id_margin=None):
             raise RuntimeError("db boom")
 
-    s, asr, ex = _make_session(_three_finals_svad(), speaker=FakeSpeakerEngine(),
+    s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
                                speaker_service=BoomService(), identify=True)
     try:
         msgs = await _collect(s.feed_audio(_pcm_ms(3000)))

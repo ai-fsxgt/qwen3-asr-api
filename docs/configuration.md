@@ -135,8 +135,8 @@ volumes:
 | `--speaker-database-url` | PostgreSQL URL | 空 | 共享 PostgreSQL/pgvector 连接地址；生产推荐通过 `SPEAKER_DATABASE_URL` 环境变量传入 |
 | `--speaker-id-threshold` | 0–1 | `0.45` | 1:N 开集识别阈，最高相似度低于此判 unknown |
 | `--speaker-id-margin` | 0–1 | `0.10` | top1-top2 margin，差距小于此判 unknown（近邻打架宁缺勿错） |
-| `--speaker-identify-min-sec` | 秒 | `5.0` | 簇累计有效语音达到该时长后才查询声纹库 |
-| `--speaker-realtime-confirmations` | 数字 | `2` | 实时连续命中相同身份达到该次数后才展示姓名 |
+| `--speaker-identify-min-sec` | 秒 | `5.0` | 每个独立证据批次查询声纹库前需累计的最短有效语音时长 |
+| `--speaker-realtime-confirmations` | 数字 | `2` | 连续独立证据批次命中相同身份达到该次数后才展示姓名 |
 | `--speaker-enroll-min-sec` | 秒 | `3.0` | 手动登记单样本最短有效语音（VAD 后） |
 | `--speaker-auto-enroll` / `--no-speaker-auto-enroll` | - | 关闭 | 离线识别未命中的说话人自动以「说话人_NN」登记（**开启 = 部署方声明已获数据主体同意**） |
 | `--speaker-auto-enroll-min-sec` | 秒 | `10.0` | 自动登记的簇最短语音总时长（严于手动登记，降低噪声建档） |
@@ -277,7 +277,7 @@ export SPEAKER_DATABASE_URL='postgresql://qwen3_asr:强密码@数据库IP:5432/q
 - **声纹库降级矩阵**：以下任一条件不满足时模块自动降级关闭（ERROR 日志 + `/v2/speakers*` 返回 503，服务正常启动）：① `enable_speaker` 开启且引擎加载成功；② `api_key` 非空；③ 建库成功。库内模板与当前引擎 `model_tag` 不一致时仅禁用登记/认领/识别，查看与删除保留（被遗忘权）。
 - **共享与留存**：所有实例直接查询同一 PostgreSQL/pgvector，不维护进程内全量缓存；声纹数据无 TTL，唯一删除途径为 `DELETE /v2/speakers/{id}`。数据库与数据卷应纳入常规备份。
 - **自动登记**：默认关闭。显式开启 `speaker_auto_enroll` 后，离线转写中未命中且语音足量（默认 ≥10s）的说话人才会登记为「说话人_NN」；实时路径不自动登记，已命中说话人也不会自动追加模板。补充样本使用 `POST /v2/speakers/{id}/templates`。
-- **准确度保护**：簇累计有效语音默认达到 5 秒后才识别；实时连续两次命中相同身份后才展示姓名；top1 低于阈值或 top1-top2 margin 不足时保持匿名。
+- **准确度保护**：实时按簇消费互不重叠的证据批次，每批默认至少包含 5 秒有效语音；连续两个独立批次命中同一身份后才展示姓名，默认最早约需 10 秒有效语音；top1 低于阈值或 top1-top2 margin 不足时保持匿名。
 - **合规**：登记接口强制 `consent=true`；开启自动登记即部署方声明已获数据主体同意；默认不留存音频；审计记录持久化在 PostgreSQL 中。
 
 ## vLLM 原生流式模式

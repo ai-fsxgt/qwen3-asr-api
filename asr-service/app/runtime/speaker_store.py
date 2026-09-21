@@ -881,6 +881,27 @@ class SpeakerStore:
         except psycopg.Error as exc:
             raise SpeakerStoreError(f"声纹识别查询失败: {exc}") from exc
 
+    def identify_many_detailed(
+        self,
+        embeddings: list[np.ndarray],
+        threshold: float = 0.45,
+        margin: float = 0.10,
+    ) -> list[SpeakerIdentification]:
+        """批量识别多个向量；单次往返查询模板，并按说话人汇总候选。"""
+        vectors = [self._validate_vector(emb) for emb in embeddings]
+        if not vectors:
+            return []
+        try:
+            with self._connection() as conn:
+                return self._identify_many_with_connection(
+                    conn,
+                    vectors,
+                    threshold=threshold,
+                    margin=margin,
+                )
+        except psycopg.Error as exc:
+            raise SpeakerStoreError(f"声纹批量识别查询失败: {exc}") from exc
+
     def _identify_with_connection(
         self,
         conn: psycopg.Connection,
@@ -889,17 +910,66 @@ class SpeakerStore:
         threshold: float,
         margin: float,
     ) -> SpeakerIdentification:
-        rows = conn.execute(
+        return self._identify_many_with_connection(
+            conn,
+            [vector],
+            threshold=threshold,
+            margin=margin,
+        )[0]
+
+    def _identify_many_with_connection(
+        self,
+        conn: psycopg.Connection,
+        vectors: list[np.ndarray],
+        *,
+        threshold: float,
+        margin: float,
+    ) -> list[SpeakerIdentification]:
+        values = sql.SQL(", ").join(
+            sql.SQL("({}, %s)").format(sql.Literal(index))
+            for index in range(len(vectors))
+        )
+        statement = sql.SQL(
             """
-            SELECT id, name, source,
-                   1 - (centroid <=> %s) AS score
-            FROM speakers
-            WHERE model_tag=%s AND centroid IS NOT NULL
-            ORDER BY centroid <=> %s
-            LIMIT 2
-            """,
-            (vector, self.model_tag, vector),
-        ).fetchall()
+            WITH query_vectors(query_index, embedding) AS (VALUES {})
+            SELECT query_vectors.query_index,
+                   candidates.id, candidates.name, candidates.source,
+                   candidates.score
+            FROM query_vectors
+            CROSS JOIN LATERAL (
+                SELECT speakers.id, speakers.name, speakers.source,
+                       MAX(1 - (speaker_templates.vector
+                                <=> query_vectors.embedding)) AS score
+                FROM speaker_templates
+                JOIN speakers ON speakers.id = speaker_templates.speaker_id
+                WHERE speakers.model_tag = %s
+                GROUP BY speakers.id, speakers.name, speakers.source
+                ORDER BY score DESC
+                LIMIT 2
+            ) AS candidates
+            ORDER BY query_vectors.query_index, candidates.score DESC
+            """
+        ).format(values)
+        rows = conn.execute(statement, (*vectors, self.model_tag)).fetchall()
+        rows_by_query: list[list[dict]] = [[] for _ in vectors]
+        for row in rows:
+            rows_by_query[int(row["query_index"])].append(row)
+        return [
+            self._decide_identification(
+                candidates,
+                threshold=threshold,
+                margin=margin,
+            )
+            for candidates in rows_by_query
+        ]
+
+    @staticmethod
+    def _decide_identification(
+        rows: list[dict],
+        *,
+        threshold: float,
+        margin: float,
+    ) -> SpeakerIdentification:
         if not rows:
             return SpeakerIdentification(False, "empty_library")
         top1 = float(rows[0]["score"])
