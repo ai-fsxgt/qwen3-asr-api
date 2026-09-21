@@ -16,7 +16,7 @@ SERVICE_CONFIG_EXAMPLE="$SERVICE_DIR/config.example.yaml"
 CONFIG_FILE="$SERVICE_DIR/.cli_launch_config"
 IMAGE_NAME="registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service"
 IMAGE_TAG="latest-vllm"
-CONTAINER_NAME="qwen3-asr-vllm"
+CONTAINER_NAME="qwen3-asr-service"
 
 # ANSI 颜色
 RED='\033[0;31m'

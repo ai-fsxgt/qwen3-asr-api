@@ -123,7 +123,7 @@ docker run -d --gpus all \
   -v ./asr-service/models:/app/models \
   -v ./asr-service/logs:/app/logs \
   -v ./asr-service/data:/app/data \
-  --name qwen3-asr-vllm \
+  --name qwen3-asr-service \
   registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm \
   --model-size 0.6b --web
 ```
