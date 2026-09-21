@@ -95,7 +95,7 @@ migration script only validates the source unless `--apply` is explicitly given:
 
 ```bash
 cd asr-service
-.venv/bin/python scripts/migrate_speaker_sqlite_to_postgres.py \
+venv/bin/python scripts/migrate_speaker_sqlite_to_postgres.py \
   --sqlite-path data/speakers.db
 ```
 
@@ -105,7 +105,7 @@ target is empty, an administrator may run:
 ```bash
 cd asr-service
 SPEAKER_DATABASE_URL='postgresql://qwen3_asr:strong-password@database-ip:5432/qwen3_asr' \
-  .venv/bin/python scripts/migrate_speaker_sqlite_to_postgres.py \
+  venv/bin/python scripts/migrate_speaker_sqlite_to_postgres.py \
   --sqlite-path data/speakers.db \
   --apply
 ```

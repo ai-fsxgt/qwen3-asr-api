@@ -20,7 +20,7 @@
       // 上传
       'upload.title': '上传音频', 'upload.hint': '点击或拖拽上传音频文件',
       'upload.formats': 'wav / mp3 / flac / m4a / aac / ogg / wma / amr / opus / webm',
-      'upload.identify': '声纹识别（标注真名，未知说话人自动登记）',
+      'upload.identify': '声纹识别（标注已登记姓名；未知说话人是否自动登记由服务端配置决定）',
       // 高级设置（可选按请求覆盖）
       'adv.title': '高级设置（可选覆盖）',
       'adv.hint': '留空＝用服务端默认；关闭开关＝本次不执行该步骤。',
@@ -72,7 +72,7 @@
       'spk.similarity': 'Voiceprint similarity {0}',
       'upload.title': 'Upload audio', 'upload.hint': 'Click or drag to upload an audio file',
       'upload.formats': 'wav / mp3 / flac / m4a / aac / ogg / wma / amr / opus / webm',
-      'upload.identify': 'Speaker identification (label real names, auto-enroll unknowns)',
+      'upload.identify': 'Speaker identification (label enrolled names; server configuration controls auto-enrollment of unknown speakers)',
       'adv.title': 'Advanced (optional overrides)',
       'adv.hint': 'Empty = server default; turning a switch off skips that step for this request.',
       'adv.output': 'Output', 'adv.punc': 'Punctuation', 'adv.words': 'Word timestamps', 'adv.diarize': 'Speaker diarization',
