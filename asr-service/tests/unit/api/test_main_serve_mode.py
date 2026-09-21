@@ -868,6 +868,8 @@ class _OkSpeaker:
 
 
 class _FakeSpeakerStore:
+    healthy = True
+
     def __init__(self, *args, **kwargs):
         self.store = self
 
@@ -880,6 +882,13 @@ class _FakeSpeakerStore:
     @property
     def speaker_count(self):
         return 0
+
+    def health(self):
+        return {
+            "healthy": self.healthy,
+            "backend": "pgvector",
+            "speaker_count": 0,
+        }
 
     def close(self):
         pass
@@ -938,6 +947,11 @@ def test_speaker_db_enabled_full_path(isolated_create_app, monkeypatch, tmp_path
     assert caps["stream"]["speaker_identification"] is True
     body = client.get("/v2/speakers", headers=auth).json()
     assert body == {"total": 0, "speakers": []}          # 空库可列
+
+    monkeypatch.setattr(_FakeSpeakerStore, "healthy", False)
+    health = client.get("/v2/health", headers=auth).json()
+    assert health["speaker_db_enabled"] is False
+    assert health["speaker_db_backend"] is None
 
 
 def test_speaker_db_degrades_on_store_failure(isolated_create_app, monkeypatch, tmp_path):

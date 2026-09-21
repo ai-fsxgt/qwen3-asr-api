@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -176,13 +177,19 @@ class SpeakerStore:
             raise SpeakerStoreError("未配置 PostgreSQL 连接地址")
         if pool_min_size < 1 or pool_max_size < pool_min_size:
             raise SpeakerStoreError("声纹库连接池大小配置无效")
+        if not math.isfinite(pool_timeout) or pool_timeout <= 0:
+            raise SpeakerStoreError("声纹库连接池等待时间配置无效")
 
         self.database_url = database_url
         self.model_tag = model_tag
         self._pool: ConnectionPool | None = None
         connect_timeout = max(1, math.ceil(pool_timeout))
         try:
-            with self._schema_initialization_lock(database_url, connect_timeout):
+            with self._schema_initialization_lock(
+                database_url,
+                connect_timeout,
+                pool_timeout,
+            ):
                 self._pool = ConnectionPool(
                     conninfo=database_url,
                     min_size=pool_min_size,
@@ -216,6 +223,7 @@ class SpeakerStore:
         cls,
         database_url: str,
         connect_timeout: int,
+        lock_timeout: float,
     ):
         """跨实例串行创建 vector 扩展和声纹表结构。"""
         with psycopg.connect(
@@ -223,10 +231,20 @@ class SpeakerStore:
             autocommit=True,
             connect_timeout=connect_timeout,
         ) as conn:
-            conn.execute(
-                "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
-                (cls._SCHEMA_INIT_LOCK,),
-            )
+            deadline = time.monotonic() + lock_timeout
+            acquired = False
+            while not acquired:
+                row = conn.execute(
+                    "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))",
+                    (cls._SCHEMA_INIT_LOCK,),
+                ).fetchone()
+                acquired = bool(row[0])
+                if acquired:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise SpeakerStoreError("声纹库结构初始化锁等待超时")
+                time.sleep(min(0.1, remaining))
             try:
                 conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
                 yield

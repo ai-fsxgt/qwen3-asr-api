@@ -4,6 +4,7 @@
 """
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -61,6 +62,30 @@ def test_concurrent_initialization_on_empty_database():
     finally:
         for instance in stores:
             instance.close()
+
+
+def test_schema_initialization_lock_has_timeout():
+    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
+        conn.execute(
+            "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
+            (SpeakerStore._SCHEMA_INIT_LOCK,),
+        )
+        started = time.monotonic()
+        try:
+            with pytest.raises(SpeakerStoreError, match="初始化锁等待超时"):
+                SpeakerStore(
+                    DATABASE_URL,
+                    model_tag=TAG,
+                    pool_min_size=1,
+                    pool_max_size=1,
+                    pool_timeout=0.2,
+                )
+        finally:
+            conn.execute(
+                "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+                (SpeakerStore._SCHEMA_INIT_LOCK,),
+            )
+        assert time.monotonic() - started < 2.0
 
 
 @pytest.fixture
