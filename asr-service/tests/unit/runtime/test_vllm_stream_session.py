@@ -753,7 +753,7 @@ def test_final_carries_speaker_name_after_duration_and_confirmation_gates():
 
     async def run():
         finals = []
-        for _ in range(4):
+        for _ in range(6):
             finals += [
                 msg for msg in await _feed_sentence(sess)
                 if msg["type"] == "final"
@@ -762,8 +762,8 @@ def test_final_carries_speaker_name_after_duration_and_confirmation_gates():
 
     try:
         finals = asyncio.run(run())
-        assert all("speaker_name" not in msg for msg in finals[:3])
-        assert finals[3]["speaker_name"] == "张三"
+        assert all("speaker_name" not in msg for msg in finals[:5])
+        assert finals[5]["speaker_name"] == "张三"
         assert service.calls == 2
     finally:
         backend.shutdown()
@@ -781,7 +781,7 @@ def test_unknown_speaker_can_match_after_centroid_stabilizes():
 
     async def run():
         finals = []
-        for _ in range(5):
+        for _ in range(9):
             finals.extend(
                 msg for msg in await _feed_sentence(sess)
                 if msg["type"] == "final"
@@ -790,8 +790,8 @@ def test_unknown_speaker_can_match_after_centroid_stabilizes():
 
     try:
         finals = asyncio.run(run())
-        assert all("speaker_name" not in msg for msg in finals[:4])
-        assert finals[4]["speaker_name"] == "张三"
+        assert all("speaker_name" not in msg for msg in finals[:8])
+        assert finals[8]["speaker_name"] == "张三"
     finally:
         backend.shutdown()
 
@@ -808,7 +808,7 @@ def test_shared_store_is_queried_and_two_unknowns_revoke_name():
 
     async def run():
         finals = []
-        for _ in range(6):
+        for _ in range(12):
             finals.extend(
                 msg for msg in await _feed_sentence(sess)
                 if msg["type"] == "final"
@@ -818,9 +818,8 @@ def test_shared_store_is_queried_and_two_unknowns_revoke_name():
     try:
         finals = asyncio.run(run())
         assert service.calls == 4
-        assert finals[3]["speaker_name"] == "张三"
-        assert finals[4]["speaker_name"] == "张三"
-        assert "speaker_name" not in finals[5]
+        assert all(msg["speaker_name"] == "张三" for msg in finals[5:11])
+        assert "speaker_name" not in finals[11]
     finally:
         backend.shutdown()
 

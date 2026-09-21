@@ -56,6 +56,17 @@ class OnlineSpeakerClusterer:
         self._min_seg_ms = min_seg_ms
         self._centroids: list[np.ndarray] = []   # 每说话人运行质心（L2 归一）
         self._durations_ms: list[int] = []
+        self._identity_segments: list[list[tuple[np.ndarray, int]]] = []
+
+    def _add_identity_evidence(
+        self,
+        index: int,
+        emb: np.ndarray,
+        dur_ms: int,
+    ) -> None:
+        self._identity_segments[index].append(
+            (np.asarray(emb, dtype=np.float32).copy(), dur_ms)
+        )
 
     def assign(self, emb: np.ndarray, dur_ms: int) -> str | None:
         """归簇一个段级 embedding（L2 归一 [192]），返回 A/B/C… 或 None（无法判定）。"""
@@ -74,12 +85,16 @@ class OnlineSpeakerClusterer:
             merged = self._centroids[idx] * previous_ms + emb * dur_ms
             self._centroids[idx] = merged / np.linalg.norm(merged)
             self._durations_ms[idx] += dur_ms
+            self._add_identity_evidence(idx, emb, dur_ms)
             return speaker_label(idx)
         if len(self._centroids) >= self._max:
             # 低置信度且已达上限：保持匿名，避免强塞最近簇污染身份结果。
             return None
         self._centroids.append(np.asarray(emb, dtype=np.float32).copy())
         self._durations_ms.append(dur_ms)
+        self._identity_segments.append([
+            (np.asarray(emb, dtype=np.float32).copy(), dur_ms)
+        ])
         return speaker_label(len(self._centroids) - 1)
 
     @property
@@ -99,6 +114,36 @@ class OnlineSpeakerClusterer:
         if 0 <= idx < len(self._durations_ms):
             return self._durations_ms[idx] / 1000.0
         return 0.0
+
+    def take_identity_evidence(
+        self,
+        label: str,
+        min_duration_sec: float,
+    ) -> tuple[np.ndarray, float] | None:
+        """消费一批未查询证据；不足门槛时保留并返回 None。"""
+        idx = _label_index(label)
+        if not 0 <= idx < len(self._identity_segments):
+            return None
+
+        selected = []
+        duration_ms = 0
+        min_duration_ms = min_duration_sec * 1000
+        for embedding, segment_duration_ms in self._identity_segments[idx]:
+            selected.append((embedding, segment_duration_ms))
+            duration_ms += segment_duration_ms
+            if duration_ms >= min_duration_ms:
+                break
+        if duration_ms < min_duration_ms:
+            return None
+        vector = sum(
+            embedding * segment_duration_ms
+            for embedding, segment_duration_ms in selected
+        )
+        del self._identity_segments[idx][:len(selected)]
+        norm = float(np.linalg.norm(vector))
+        if norm <= 0:
+            return None
+        return vector / norm, duration_ms / 1000.0
 
 
 # ─── 离线全局聚类 ───
@@ -262,8 +307,25 @@ class DiarizationResult:
                 "label": speaker_label(i),
                 "centroid": centroid,
                 "dur_sec": _union_duration([self._windows[j] for j in idx]),
+                "evidence": self._non_overlapping_evidence(idx),
             })
         return out
+
+    def _non_overlapping_evidence(self, indices: np.ndarray) -> list[dict]:
+        """按新增覆盖时长返回窗向量，重叠区域不重复计入身份识别时长。"""
+        evidence = []
+        covered_until = float("-inf")
+        for index in indices:
+            start, end = self._windows[int(index)]
+            new_duration = end - max(start, covered_until)
+            covered_until = max(covered_until, end)
+            if new_duration <= 0:
+                continue
+            evidence.append({
+                "embedding": self._embs[int(index)],
+                "dur_sec": new_duration,
+            })
+        return evidence
 
 
 def _union_duration(intervals: list[tuple[float, float]]) -> float:

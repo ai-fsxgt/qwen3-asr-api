@@ -331,29 +331,207 @@ class SpeakerService:
         label: str | None = None,
         threshold: float | None = None,
         required_margin: float | None = None,
+        evidence_detail: dict | None = None,
     ) -> None:
+        detail = {
+            "matched": decision.matched,
+            "reason": decision.reason,
+            "top1_score": decision.top1_score,
+            "top2_score": decision.top2_score,
+            "margin": decision.margin,
+            "threshold": (
+                cfg.SPEAKER_ID_THRESHOLD if threshold is None else threshold
+            ),
+            "required_margin": (
+                cfg.SPEAKER_ID_MARGIN
+                if required_margin is None
+                else required_margin
+            ),
+            "duration_sec": duration_sec,
+            "label": label,
+            "via": via,
+            "match_basis": "template",
+        }
+        if evidence_detail is not None:
+            detail.update(evidence_detail)
         self.store.audit(
             "identify",
             decision.speaker_id if decision.matched else None,
-            {
-                "matched": decision.matched,
-                "reason": decision.reason,
-                "top1_score": decision.top1_score,
-                "top2_score": decision.top2_score,
-                "margin": decision.margin,
-                "threshold": (
-                    cfg.SPEAKER_ID_THRESHOLD if threshold is None else threshold
-                ),
-                "required_margin": (
-                    cfg.SPEAKER_ID_MARGIN
-                    if required_margin is None
-                    else required_margin
-                ),
-                "duration_sec": duration_sec,
-                "label": label,
-                "via": via,
-            },
+            detail,
         )
+
+    @staticmethod
+    def _group_identity_evidence(
+        evidence: list[dict],
+        min_duration_sec: float,
+    ) -> list[tuple[np.ndarray, float]]:
+        """将不重叠窗合并为独立身份查询向量，每批至少包含指定语音时长。"""
+        groups: list[tuple[np.ndarray, float]] = []
+        weighted_sum = None
+        duration = 0.0
+        for sample in evidence:
+            sample_duration = float(sample["dur_sec"])
+            vector = np.asarray(sample["embedding"], dtype=np.float32)
+            contribution = vector * sample_duration
+            weighted_sum = (
+                contribution if weighted_sum is None
+                else weighted_sum + contribution
+            )
+            duration += sample_duration
+            if duration >= min_duration_sec:
+                groups.append((weighted_sum, duration))
+                weighted_sum = None
+                duration = 0.0
+        if weighted_sum is not None and groups:
+            previous_sum, previous_duration = groups[-1]
+            groups[-1] = (
+                previous_sum + weighted_sum,
+                previous_duration + duration,
+            )
+
+        normalized = []
+        for vector_sum, group_duration in groups:
+            norm = float(np.linalg.norm(vector_sum))
+            if norm > 0:
+                normalized.append((vector_sum / norm, group_duration))
+        return normalized
+
+    @staticmethod
+    def _aggregate_identity_decisions(
+        decisions: list[SpeakerIdentification],
+        durations: list[float],
+    ) -> tuple[SpeakerIdentification, dict]:
+        matched = [
+            (decision, duration)
+            for decision, duration in zip(decisions, durations, strict=True)
+            if decision.matched
+        ]
+        matched_duration = sum(duration for _decision, duration in matched)
+        total_duration = sum(durations)
+        detail = {
+            "evidence_count": len(decisions),
+            "matched_evidence_count": len(matched),
+            "matched_duration_sec": matched_duration,
+            "evidence_duration_sec": total_duration,
+            "support_ratio": (
+                matched_duration / total_duration if total_duration > 0 else 0.0
+            ),
+        }
+        for attribute, prefix in (
+            ("top1_score", "evidence_top1"),
+            ("margin", "evidence_margin"),
+        ):
+            values = []
+            for decision in decisions:
+                value = getattr(decision, attribute)
+                if value is not None:
+                    values.append(float(value))
+            if values:
+                detail.update({
+                    f"{prefix}_min": min(values),
+                    f"{prefix}_median": float(np.median(values)),
+                    f"{prefix}_max": max(values),
+                })
+        reason_counts = {}
+        for decision in decisions:
+            reason_counts[decision.reason] = reason_counts.get(decision.reason, 0) + 1
+        if reason_counts:
+            detail["evidence_reasons"] = reason_counts
+        if not decisions:
+            return SpeakerIdentification(False, "insufficient_duration"), detail
+        if not matched:
+            strongest = max(
+                decisions,
+                key=lambda decision: (
+                    decision.top1_score
+                    if decision.top1_score is not None else float("-inf")
+                ),
+            )
+            return strongest, detail
+
+        speaker_ids = {decision.speaker_id for decision, _duration in matched}
+        representative = max(
+            (decision for decision, _duration in matched),
+            key=lambda decision: (
+                decision.top1_score
+                if decision.top1_score is not None else float("-inf")
+            ),
+        )
+        if len(speaker_ids) > 1:
+            return SpeakerIdentification(
+                False,
+                "inconsistent_identity",
+                top1_score=representative.top1_score,
+                top2_score=representative.top2_score,
+                margin=representative.margin,
+            ), detail
+        if matched_duration * 2 <= total_duration:
+            return SpeakerIdentification(
+                False,
+                "insufficient_identity_support",
+                top1_score=representative.top1_score,
+                top2_score=representative.top2_score,
+                margin=representative.margin,
+            ), detail
+
+        def weighted_average(attribute: str) -> float | None:
+            values = [
+                (getattr(decision, attribute), duration)
+                for decision, duration in matched
+                if getattr(decision, attribute) is not None
+            ]
+            if not values:
+                return None
+            weight = sum(duration for _value, duration in values)
+            return sum(value * duration for value, duration in values) / weight
+
+        return SpeakerIdentification(
+            True,
+            "matched",
+            top1_score=weighted_average("top1_score"),
+            top2_score=weighted_average("top2_score"),
+            margin=weighted_average("margin"),
+            speaker_id=representative.speaker_id,
+            name=representative.name,
+            source=representative.source,
+        ), detail
+
+    def _identify_offline_evidence(
+        self,
+        clusters: list[dict],
+        *,
+        threshold: float,
+        margin: float,
+    ) -> dict[str, tuple[SpeakerIdentification, dict]]:
+        prepared: list[tuple[str, list[tuple[np.ndarray, float]]]] = []
+        vectors = []
+        for cluster in clusters:
+            if "evidence" not in cluster:
+                continue
+            groups = self._group_identity_evidence(
+                cluster["evidence"],
+                cfg.SPEAKER_IDENTIFY_MIN_SEC,
+            )
+            prepared.append((cluster.get("label", "?"), groups))
+            vectors.extend(vector for vector, _duration in groups)
+
+        decisions = self.store.identify_many_detailed(
+            vectors,
+            threshold=threshold,
+            margin=margin,
+        ) if vectors else []
+        results = {}
+        offset = 0
+        for label, groups in prepared:
+            count = len(groups)
+            group_decisions = decisions[offset:offset + count]
+            durations = [duration for _vector, duration in groups]
+            results[label] = self._aggregate_identity_decisions(
+                group_decisions,
+                durations,
+            )
+            offset += count
+        return results
 
     def _identify_cluster(
         self,
@@ -380,6 +558,18 @@ class SpeakerService:
             label=label,
             threshold=threshold,
             required_margin=margin,
+            evidence_detail=(
+                {
+                    "evidence_count": 1,
+                    "matched_evidence_count": int(decision.matched),
+                    "matched_duration_sec": (
+                        duration_sec if decision.matched else 0.0
+                    ),
+                    "evidence_duration_sec": duration_sec,
+                    "support_ratio": 1.0 if decision.matched else 0.0,
+                }
+                if via == "stream" else None
+            ),
         )
         return decision.as_match()
 
@@ -491,6 +681,19 @@ class SpeakerService:
         """
         thr = cfg.SPEAKER_ID_THRESHOLD if id_threshold is None else id_threshold
         mgn = cfg.SPEAKER_ID_MARGIN if id_margin is None else id_margin
+        if cancelled and cancelled():
+            return []
+        try:
+            evidence_results = self._identify_offline_evidence(
+                clusters,
+                threshold=thr,
+                margin=mgn,
+            )
+        except Exception as e:
+            logger.warning(f"离线声纹批量识别失败，退回匿名: {e}")
+            return [self._anon(cluster.get("label", "?")) for cluster in clusters]
+        if cancelled and cancelled():
+            return []
         out = []
         for c in clusters:
             if cancelled and cancelled():
@@ -501,26 +704,55 @@ class SpeakerService:
                     if cancelled and cancelled():
                         break
                     dur = float(c.get("dur_sec") or 0.0)
+                    evidence_result = evidence_results.get(label)
+                    decision = None
+                    if evidence_result is not None:
+                        decision, detail = evidence_result
+                        self._audit_identification(
+                            decision,
+                            via="offline",
+                            duration_sec=dur,
+                            label=label,
+                            threshold=thr,
+                            required_margin=mgn,
+                            evidence_detail=detail,
+                        )
+                        hit = decision.as_match()
+                    else:
+                        hit = None
                     if (
                         cfg.SPEAKER_AUTO_ENROLL
                         and dur >= cfg.SPEAKER_IDENTIFY_MIN_SEC
                         and dur >= cfg.SPEAKER_AUTO_ENROLL_MIN_SEC
                     ):
-                        mapping = self._identify_or_enroll_cluster(
-                            c,
-                            threshold=thr,
-                            margin=mgn,
-                            cancelled=cancelled,
-                        )
-                        if mapping is None:
-                            break
+                        if hit:
+                            mapping = {"label": label, **hit}
+                        elif (
+                            decision is not None
+                            and decision.reason in {
+                                "ambiguous_margin",
+                                "inconsistent_identity",
+                                "insufficient_identity_support",
+                            }
+                        ):
+                            mapping = self._anon(label)
+                        else:
+                            mapping = self._identify_or_enroll_cluster(
+                                c,
+                                threshold=thr,
+                                margin=mgn,
+                                cancelled=cancelled,
+                            )
+                            if mapping is None:
+                                break
                     else:
-                        hit = self._identify_cluster(
-                            c,
-                            threshold=thr,
-                            margin=mgn,
-                            via="offline",
-                        )
+                        if evidence_result is None:
+                            hit = self._identify_cluster(
+                                c,
+                                threshold=thr,
+                                margin=mgn,
+                                via="offline",
+                            )
                         if cancelled and cancelled():
                             break
                         if hit:

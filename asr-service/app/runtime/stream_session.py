@@ -391,13 +391,13 @@ class StreamSession:
                 spk = self._spk_cluster.assign(emb, segment_duration_ms)
             except Exception as e:
                 logger.warning(f"说话人判定失败，本段不标注: {e}")
-            # 声纹识别（可选）：以"当时"质心查库，不回改历史（以最新 final 为准）
+            # 声纹识别（可选）：用包含本段的新语音证据查库，不回改历史。
             if spk is not None and self._identify and self._speaker_service is not None:
                 try:
-                    if segment_duration_ms >= self._spk_min_seg_ms:
-                        spk_name = await self._in_thread(self._lookup_speaker_name, spk)
-                    else:
-                        spk_name = self._spk_identity_tracker.confirmed_name(spk)
+                    spk_name = await self._in_thread(
+                        self._lookup_speaker_name,
+                        spk,
+                    )
                 except Exception as e:
                     logger.warning(f"声纹识别失败，本段不带真名: {e}")
         logger.info(f"[stream] final#{self.seg_id} 段[{int(start_ms)},{int(end_ms)}]"
@@ -421,18 +421,19 @@ class StreamSession:
         yield msg
 
     def _lookup_speaker_name(self, spk: str) -> str | None:
-        """查询共享声纹库并执行会话级连续命中确认。"""
+        """用包含新增语音的最近证据查询声纹库，并执行连续命中确认。"""
         cluster = self._spk_cluster      # 本地引用：release() 并发置 None 防护
         if cluster is None:
             return None
-        duration_sec = cluster.duration_sec_of(spk)
-        if duration_sec < cfg.SPEAKER_IDENTIFY_MIN_SEC:
-            return None
-        centroid = cluster.centroid_of(spk)
-        if centroid is None:
-            return None
+        evidence = cluster.take_identity_evidence(
+            spk,
+            cfg.SPEAKER_IDENTIFY_MIN_SEC,
+        )
+        if evidence is None:
+            return self._spk_identity_tracker.confirmed_name(spk)
+        embedding, duration_sec = evidence
         mapping = self._speaker_service.map_clusters(
-            [{"label": spk, "centroid": centroid, "dur_sec": duration_sec}],
+            [{"label": spk, "centroid": embedding, "dur_sec": duration_sec}],
             id_threshold=self._spk_id_threshold, id_margin=self._spk_id_margin)
         match = mapping[0] if mapping and mapping[0].get("speaker_id") else None
         return self._spk_identity_tracker.observe(spk, match)

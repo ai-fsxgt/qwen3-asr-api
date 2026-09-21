@@ -96,14 +96,14 @@ def _embed_speaker_segment(speaker, audio: _SegmentAudioBuffer):
 def _map_speaker_identity(
     service,
     label,
-    centroid,
+    embedding,
     duration_sec,
     threshold,
     margin,
 ):
     """在线程池中执行同步声纹库查询，返回完整匹配结果。"""
     mapping = service.map_clusters(
-        [{"label": label, "centroid": centroid, "dur_sec": duration_sec}],
+        [{"label": label, "centroid": embedding, "dur_sec": duration_sec}],
         id_threshold=threshold,
         id_margin=margin,
     )
@@ -367,18 +367,19 @@ class VllmStreamSession:
         service = self._speaker_service
         if service is None:
             return None
-        duration_sec = cluster.duration_sec_of(label)
-        if duration_sec < cfg.SPEAKER_IDENTIFY_MIN_SEC:
-            return None
-        centroid = cluster.centroid_of(label)
-        if centroid is None:
-            return None
+        evidence = cluster.take_identity_evidence(
+            label,
+            cfg.SPEAKER_IDENTIFY_MIN_SEC,
+        )
+        if evidence is None:
+            return self._spk_identity_tracker.confirmed_name(label)
+        embedding, duration_sec = evidence
         try:
             match = await self._in_speaker_thread(
                 _map_speaker_identity,
                 service,
                 label,
-                centroid,
+                embedding,
                 duration_sec,
                 self._spk_id_threshold,
                 self._spk_id_margin,
@@ -409,10 +410,11 @@ class VllmStreamSession:
         msg["speaker"] = label
         if self._identify and self._speaker_service is not None:
             try:
-                if duration_ms >= self._spk_min_seg_ms:
-                    name = await self._lookup_speaker_name(label, cluster, generation)
-                else:
-                    name = self._spk_identity_tracker.confirmed_name(label)
+                name = await self._lookup_speaker_name(
+                    label,
+                    cluster,
+                    generation,
+                )
             except Exception as exc:
                 logger.warning(f"[vllm-stream] 声纹识别失败，本段仅保留匿名标签: {exc}")
                 name = None
