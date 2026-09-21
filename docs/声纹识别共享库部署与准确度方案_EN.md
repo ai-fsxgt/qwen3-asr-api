@@ -69,10 +69,12 @@ password in `config.yaml`.
 
 - Manual enrollment accepts one template and recommends at least three without
   making them mandatory.
-- Real-time identification starts after a cluster accumulates at least 5 seconds
-  of effective speech.
-- A real-time name is exposed after two consecutive matches to the same identity.
-- Real-time cluster centroids are weighted by speech duration.
+- Real-time identification accumulates speech that has not been used by a previous
+  lookup and queries the database for each independent batch of at least 5 seconds.
+- A real-time name is exposed after two independent batches match the same identity,
+  so the default earliest confirmation requires about 10 seconds of effective speech.
+- Each real-time evidence vector is weighted by segment speech duration; the running
+  cluster centroid is not reused for identity lookups.
 - Low-confidence segments remain anonymous after the maximum speaker count is reached.
 - Offline clusters shorter than 5 seconds remain anonymous.
 - Identification is rejected when top1 is below `speaker_id_threshold` or the

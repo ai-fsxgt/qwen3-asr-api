@@ -135,8 +135,8 @@ See [Transcription · Real-time Recording Download / Delete](api/v2/transcriptio
 | `--speaker-database-url` | PostgreSQL URL | Empty | Shared PostgreSQL/pgvector connection URL; in production, prefer the `SPEAKER_DATABASE_URL` environment variable |
 | `--speaker-id-threshold` | 0–1 | `0.45` | 1:N open-set identification threshold; if the highest similarity is below this, the result is `unknown` |
 | `--speaker-id-margin` | 0–1 | `0.10` | top1-top2 margin; if the gap is smaller than this, the result is `unknown` (when neighbors compete, prefer omission over error) |
-| `--speaker-identify-min-sec` | Seconds | `5.0` | Minimum accumulated speech before querying the voiceprint database |
-| `--speaker-realtime-confirmations` | Number | `2` | Consecutive real-time matches required before exposing a name |
+| `--speaker-identify-min-sec` | Seconds | `5.0` | Minimum speech required in each independent evidence batch before querying the voiceprint database |
+| `--speaker-realtime-confirmations` | Number | `2` | Consecutive independent evidence batches that must match the same identity before exposing a name |
 | `--speaker-enroll-min-sec` | Seconds | `3.0` | Minimum effective speech per sample for manual enrollment (after VAD) |
 | `--speaker-auto-enroll` / `--no-speaker-auto-enroll` | - | Disabled | Auto-enroll unmatched speakers from offline identification as `Speaker_NN` (**enabling auto-enroll = the deployer declares data-subject consent has been obtained**) |
 | `--speaker-auto-enroll-min-sec` | Seconds | `10.0` | Minimum total speech duration of a cluster for auto-enrollment (stricter than manual enrollment, to reduce noisy records) |
@@ -277,7 +277,7 @@ export SPEAKER_DATABASE_URL='postgresql://qwen3_asr:strong-password@database-ip:
 - **Voiceprint-database degradation matrix**: if any of the following conditions is not met, the module automatically degrades and disables itself (ERROR log + `/v2/speakers*` returns 503, while the service still starts normally): ① `enable_speaker` is on and the engine loads successfully; ② `api_key` is non-empty; ③ the database is created successfully. When stored templates do not match the current engine's `model_tag`, only enrollment/claiming/identification is disabled while viewing and deletion are retained (right to be forgotten).
 - **Sharing and retention**: every service instance queries the same PostgreSQL/pgvector database directly, with no process-local full-library cache. Voiceprint data has no TTL and can only be removed through `DELETE /v2/speakers/{id}`. Back up the database and its data volume regularly.
 - **Auto-enrollment**: disabled by default. When `speaker_auto_enroll` is explicitly enabled, only unmatched offline clusters with enough speech (default ≥10s) are enrolled as `说话人_NN`. Real-time sessions never auto-enroll, and matched speakers never receive samples automatically. Use `POST /v2/speakers/{id}/templates` to add controlled samples.
-- **Accuracy guards**: identification starts after a cluster accumulates 5 seconds of speech by default; real-time names require two consecutive matches; results remain anonymous when top1 is below the threshold or the top1-top2 margin is insufficient.
+- **Accuracy guards**: real-time identification consumes non-overlapping evidence batches with at least 5 seconds of speech per batch by default; a name is exposed after two independent batches match the same identity, so the default earliest confirmation requires about 10 seconds of effective speech; results remain anonymous when top1 is below the threshold or the top1-top2 margin is insufficient.
 - **Compliance**: enrollment requires `consent=true`; enabling auto-enrollment asserts that data-subject consent has been obtained; audio retention is off by default; audit records are persisted in PostgreSQL.
 
 ## vLLM Native Streaming Mode
