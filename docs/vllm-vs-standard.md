@@ -107,9 +107,9 @@
 ## 5. 部署与运维变化
 
 - **独立本地环境**：`bash setup.sh --vllm` 建 `venv-vllm`；`QWEN_VENV=venv-vllm bash start.sh --serve-mode vllm` 启动。
-- **独立 Docker 镜像**：`docker/Dockerfile.vllm`（基于 `vllm/vllm-openai:v0.14.0` 派生）+ `docker/docker-compose.vllm.yml`（独立端口 **8766**，与 standard 的 8765 并存）；`docker/build.sh` 第 4 项构建。
-- **交互式管理脚本 `manage.sh`**：参数面板新增「启动模式」（选 vllm 后面板动态变形），venv 启动自动用 `venv-vllm`、Docker 自动用 `-vllm` 镜像 tag，Compose 编排 / 镜像拉取增加 vLLM 变体，venv 菜单支持 standard/vLLM 双环境管理。
-- **CI**：新增独立 vLLM 镜像构建 job（打 `:<ver>-vllm` / `:latest-vllm`，与 GPU/CPU 解耦）。
+- **Docker 镜像**：`docker/Dockerfile.vllm` 基于 `vllm/vllm-openai:v0.14.0` 派生，使用唯一编排 `docker/docker-compose.yml` 启动；`docker/build.sh` 直接构建 vLLM 镜像。
+- **交互式管理脚本 `manage.sh`**：Docker 与 Compose 固定使用 vLLM；本地 venv 仍支持 standard/vLLM 双环境和启动模式选择。
+- **CI**：发布 `:<ver>-vllm` / `:latest-vllm` 两个 vLLM 镜像标签。
 
 ---
 

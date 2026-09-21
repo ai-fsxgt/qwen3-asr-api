@@ -11,13 +11,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR"                          # 脚本已置于仓库根
 SERVICE_DIR="$SCRIPT_DIR/asr-service"               # 应用目录（venv / 启动脚本 / 配置 / 模型 / 日志）
 COMPOSE_FILE="$PROJECT_ROOT/docker/docker-compose.yml"
-COMPOSE_FILE_CPU="$PROJECT_ROOT/docker/docker-compose.cpu.yml"
-COMPOSE_FILE_VLLM="$PROJECT_ROOT/docker/docker-compose.vllm.yml"
 SERVICE_CONFIG="$SERVICE_DIR/config.yaml"
 SERVICE_CONFIG_EXAMPLE="$SERVICE_DIR/config.example.yaml"
 CONFIG_FILE="$SERVICE_DIR/.cli_launch_config"
 IMAGE_NAME="registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service"
-IMAGE_TAG="latest"
+IMAGE_TAG="latest-vllm"
 CONTAINER_NAME="qwen3-asr-service"
 
 # ANSI 颜色
@@ -41,7 +39,6 @@ VENV_PYTHON_VERSION=""
 VENV_VLLM_PYTHON_VERSION=""
 MENU_RESULT=0
 INPUT_RESULT=""
-ACTIVE_COMPOSE_VARIANT="gpu"   # Compose 编排：gpu / cpu / vllm（菜单内可切换）
 
 # ============================================================
 # 信号处理：确保退出时恢复光标
@@ -187,13 +184,10 @@ check_prerequisites() {
         HAS_DOCKER=1
     fi
 
-    # Docker Compose
+    # Docker Compose V2（仅支持 docker compose 插件）
     if [ "$HAS_DOCKER" -eq 1 ] && docker compose version &>/dev/null; then
         HAS_COMPOSE=1
         COMPOSE_CMD="docker compose"
-    elif command -v docker-compose &>/dev/null; then
-        HAS_COMPOSE=1
-        COMPOSE_CMD="docker-compose"
     fi
 
     # GPU (nvidia-smi)
@@ -226,13 +220,9 @@ print_status_summary() {
     fi
 
     if [ "$HAS_COMPOSE" -eq 1 ]; then
-        if [[ "$COMPOSE_CMD" == "docker compose" ]]; then
-            printf "  Docker Compose:     ${GREEN}✔ V2${NC}\n"
-        else
-            printf "  Docker Compose:     ${GREEN}✔ V1${NC}\n"
-        fi
+        printf "  Docker Compose:     ${GREEN}✔ V2${NC}\n"
     else
-        printf "  Docker Compose:     ${RED}✘ 未安装${NC}\n"
+        printf "  Docker Compose:     ${RED}✘ 未安装 V2${NC}\n"
     fi
 
     if [ "$HAS_GPU" -eq 1 ]; then
@@ -262,7 +252,7 @@ print_status_summary() {
 # ============================================================
 run_compose() {
     if [ "$HAS_COMPOSE" -eq 0 ]; then
-        error_msg "Docker Compose 未安装，无法执行此操作"
+        error_msg "Docker Compose V2 未安装，无法执行此操作"
         return 1
     fi
     $COMPOSE_CMD -f "$COMPOSE_FILE" "$@"
@@ -273,19 +263,9 @@ docker_pull() {
         error_msg "Docker 未安装"
         return
     fi
-    show_menu "拉取哪个镜像变体？" \
-        "GPU standard（${IMAGE_TAG}）" \
-        "CPU（${IMAGE_TAG}-cpu）" \
-        "vLLM 原生流式（${IMAGE_TAG}-vllm）"
-    local tag
-    case $MENU_RESULT in
-        0) tag="$IMAGE_TAG" ;;
-        1) tag="${IMAGE_TAG}-cpu" ;;
-        2) tag="${IMAGE_TAG}-vllm" ;;
-    esac
-    info_msg "拉取镜像 ${IMAGE_NAME}:${tag} ..."
+    info_msg "拉取镜像 ${IMAGE_NAME}:${IMAGE_TAG} ..."
     echo
-    if docker pull "${IMAGE_NAME}:${tag}"; then
+    if docker pull "${IMAGE_NAME}:${IMAGE_TAG}"; then
         echo
         success_msg "镜像拉取完成"
     else
@@ -419,7 +399,7 @@ menu_docker() {
             echo
         fi
 
-        show_menu "Docker 容器方式（docker run，参数向导）" \
+        show_menu "Docker vLLM 容器方式（docker run，参数向导）" \
             "1. 启动容器（参数向导）" \
             "2. 停止容器" \
             "3. 查看容器状态" \
@@ -445,13 +425,8 @@ menu_docker() {
 # ============================================================
 # Docker Compose 管理（config.yaml 驱动，推荐）
 # ============================================================
-# 当前选中的编排文件（GPU / CPU，可在菜单切换）
 active_compose_file() {
-    case "$ACTIVE_COMPOSE_VARIANT" in
-        cpu)  echo "$COMPOSE_FILE_CPU" ;;
-        vllm) echo "$COMPOSE_FILE_VLLM" ;;
-        *)    echo "$COMPOSE_FILE" ;;
-    esac
+    echo "$COMPOSE_FILE"
 }
 
 # 首次使用引导：无 config.yaml 时从 config.example.yaml 拷贝生成。
@@ -481,7 +456,7 @@ compose_prereq() {
         return 1
     fi
     if [ "$HAS_COMPOSE" -eq 0 ]; then
-        error_msg "Docker Compose 未安装"
+        error_msg "Docker Compose V2 未安装"
         return 1
     fi
     return 0
@@ -491,12 +466,16 @@ compose_up() {
     compose_prereq || { press_any_key; return; }
     ensure_service_config || { press_any_key; return; }
     local file; file="$(active_compose_file)"
-    info_msg "启动容器（$ACTIVE_COMPOSE_VARIANT · $(basename "$file") · 配置以 config.yaml 为准）..."
+    info_msg "启动 vLLM 容器（$(basename "$file") · 配置以 config.yaml 为准）..."
     echo
     if $COMPOSE_CMD -f "$file" up -d; then
         echo
         success_msg "容器已启动"
-        info_msg "Web UI 默认 http://<host>:<port>/web-ui（host/port 以 config.yaml 为准）"
+        local published public_port
+        published=$($COMPOSE_CMD -f "$file" port asr-vllm 8765)
+        published="${published%%$'\n'*}"
+        public_port="${published##*:}"
+        info_msg "Web UI: http://<host>:${public_port}/web-ui"
     else
         echo
         error_msg "启动失败"
@@ -559,37 +538,19 @@ edit_service_config() {
     press_any_key
 }
 
-toggle_compose_variant() {
-    show_menu "选择 Compose 编排" \
-        "GPU（docker-compose.yml）" \
-        "CPU（docker-compose.cpu.yml）" \
-        "vLLM（docker-compose.vllm.yml · GPU 原生流式 · 8766）"
-    case $MENU_RESULT in
-        0) ACTIVE_COMPOSE_VARIANT="gpu" ;;
-        1) ACTIVE_COMPOSE_VARIANT="cpu" ;;
-        2) ACTIVE_COMPOSE_VARIANT="vllm" ;;
-    esac
-    success_msg "已切换为 $ACTIVE_COMPOSE_VARIANT 编排"
-    if [ "$ACTIVE_COMPOSE_VARIANT" = "vllm" ]; then
-        info_msg "vLLM 镜像 registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm；首次需先拉取或构建（docker/build.sh 选 4）"
-    fi
-    press_any_key
-}
-
 menu_compose() {
     while true; do
         clear
         if [ "$HAS_COMPOSE" -eq 0 ]; then
-            warn_msg "Docker Compose 未安装，部分功能不可用"
+            warn_msg "Docker Compose V2 未安装，部分功能不可用"
             echo
         fi
-        show_menu "Docker Compose 管理（当前：$ACTIVE_COMPOSE_VARIANT · config.yaml 驱动）" \
+        show_menu "Docker Compose 管理（vLLM · config.yaml 驱动）" \
             "1. 启动容器（up -d）" \
             "2. 停止容器（down）" \
             "3. 重启容器" \
             "4. 查看日志" \
             "5. 编辑 config.yaml 配置" \
-            "6. 切换 GPU / CPU / vLLM 编排" \
             "0. 返回主菜单"
         case $MENU_RESULT in
             0) compose_up ;;
@@ -597,8 +558,7 @@ menu_compose() {
             2) compose_restart ;;
             3) compose_logs ;;
             4) edit_service_config ;;
-            5) toggle_compose_variant ;;
-            6) return ;;
+            5) return ;;
         esac
     done
 }
@@ -967,14 +927,20 @@ panel_edit() {
 # 面板项集合（依 serve-mode 动态）：standard 显示 punc/stream；
 # vllm 显示 vllm_align_device/vllm_infer_batch，隐藏 punc（模型原生标点）与 stream（流式恒开）
 panel_keys() {
-    local k=(start serve_mode model_size device model_source align)
-    if [ "$LAUNCH_SERVE_MODE" = "vllm" ]; then
+    local k=(start)
+    if [ "$LAUNCH_METHOD" != "docker" ]; then
+        k+=(serve_mode)
+    fi
+    k+=(model_size)
+    [ "$LAUNCH_METHOD" != "docker" ] && k+=(device)
+    k+=(model_source align)
+    if [ "$LAUNCH_METHOD" = "docker" ] || [ "$LAUNCH_SERVE_MODE" = "vllm" ]; then
         k+=(vllm_align_device vllm_infer_batch)
     else
         k+=(punc)
     fi
     k+=(web max_segment host port api_key)
-    [ "$LAUNCH_SERVE_MODE" != "vllm" ] && k+=(stream)
+    [ "$LAUNCH_METHOD" != "docker" ] && [ "$LAUNCH_SERVE_MODE" != "vllm" ] && k+=(stream)
     k+=(task_store speaker speaker_db openai_api dashscope_api back)
     printf '%s\n' "${k[@]}"
 }
@@ -1240,8 +1206,7 @@ launch_via_venv() {
 }
 
 launch_via_docker() {
-    local args
-    args=$(build_launch_args)
+    LAUNCH_SERVE_MODE="vllm"
 
     if [ "$HAS_DOCKER" -eq 0 ]; then
         error_msg "Docker 未安装"
@@ -1249,14 +1214,11 @@ launch_via_docker() {
         return
     fi
 
-    # 镜像 tag 按 serve-mode 选择（vllm 用 -vllm 变体，且对无 GPU 提醒）
+    # Docker 部署只保留 vLLM 镜像。
     local image_tag="$IMAGE_TAG"
-    if [ "$LAUNCH_SERVE_MODE" = "vllm" ]; then
-        image_tag="${IMAGE_TAG}-vllm"
-        if [ "$HAS_GPU" -eq 0 ]; then
-            warn_msg "未检测到 GPU —— vLLM 镜像必须 CUDA，启动可能失败"
-            if ! confirm "仍要继续？"; then return; fi
-        fi
+    if [ "$HAS_GPU" -eq 0 ]; then
+        warn_msg "未检测到 GPU —— vLLM 镜像必须 CUDA，启动可能失败"
+        if ! confirm "仍要继续？"; then return; fi
     fi
 
     # 检查同名容器是否已存在
@@ -1339,6 +1301,10 @@ launch_wizard() {
     default_config
     load_launch_config || true       # 有保存则覆盖默认值，无则用默认
     LAUNCH_METHOD="$method"          # 启动方式以当前入口为准
+    if [ "$method" = "docker" ]; then
+        LAUNCH_SERVE_MODE="vllm"
+        LAUNCH_DEVICE="cuda"
+    fi
     config_panel "$method"
 }
 

@@ -229,7 +229,7 @@ bash start.sh --no-config
 
 | Variable | Config Key | Description |
 |----------|------------|-------------|
-| `ASR_API_KEY` | `api_key` | API key; lower priority than the config file and CLI (`api_key: ""` in the config file also overrides it — remove that line to use the env var) |
+| `ASR_API_KEY` | `api_key` | API key; lower priority than the config file and CLI (an explicit `api_key` value in the config file overrides the environment variable) |
 | `MODEL_SOURCE` | `model_source` | Model download source |
 | `SPEAKER_DATABASE_URL` | `speaker_database_url` | PostgreSQL/pgvector connection URL; recommended to keep database passwords out of config files |
 
@@ -324,10 +324,11 @@ QWEN_VENV=venv-vllm bash asr-service/start.sh --serve-mode vllm --model-size 0.6
 # Or call the venv-vllm interpreter directly:
 asr-service/venv-vllm/bin/python -m app.main --serve-mode vllm --model-size 0.6b --web
 
-# Docker (separate image, separate port 8766)
-docker compose -f docker/docker-compose.vllm.yml up -d
+# Docker
+[ -f asr-service/config.yaml ] || cp asr-service/config.example.yaml asr-service/config.yaml
+docker compose -f docker/docker-compose.yml up -d
 
-# Interactive: bash manage.sh → venv mode (pick serve-mode vllm) / compose mode (switch to vLLM)
+# Interactive: bash manage.sh → venv mode (pick serve-mode vllm) / Compose mode
 ```
 
 **Notes**
