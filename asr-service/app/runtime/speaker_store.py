@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -179,14 +180,19 @@ class SpeakerStore:
         self.database_url = database_url
         self.model_tag = model_tag
         self._pool: ConnectionPool | None = None
+        connect_timeout = max(1, math.ceil(pool_timeout))
         try:
-            with self._schema_initialization_lock(database_url):
+            with self._schema_initialization_lock(database_url, connect_timeout):
                 self._pool = ConnectionPool(
                     conninfo=database_url,
                     min_size=pool_min_size,
                     max_size=pool_max_size,
                     timeout=pool_timeout,
-                    kwargs={"autocommit": True, "row_factory": dict_row},
+                    kwargs={
+                        "autocommit": True,
+                        "row_factory": dict_row,
+                        "connect_timeout": connect_timeout,
+                    },
                     configure=self._configure_connection,
                     open=True,
                 )
@@ -206,9 +212,17 @@ class SpeakerStore:
 
     @classmethod
     @contextmanager
-    def _schema_initialization_lock(cls, database_url: str):
+    def _schema_initialization_lock(
+        cls,
+        database_url: str,
+        connect_timeout: int,
+    ):
         """跨实例串行创建 vector 扩展和声纹表结构。"""
-        with psycopg.connect(database_url, autocommit=True) as conn:
+        with psycopg.connect(
+            database_url,
+            autocommit=True,
+            connect_timeout=connect_timeout,
+        ) as conn:
             conn.execute(
                 "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
                 (cls._SCHEMA_INIT_LOCK,),
@@ -1014,13 +1028,16 @@ class SpeakerStore:
     def health(self) -> dict:
         try:
             with self._connection() as conn:
-                conn.execute("SELECT 1")
+                row = conn.execute(
+                    "SELECT COUNT(*) AS count FROM speakers"
+                ).fetchone()
+                speaker_count = int(row["count"])
         except Exception as exc:
             return {"healthy": False, "backend": "pgvector", "error": str(exc)}
         return {
             "healthy": True,
             "backend": "pgvector",
-            "speaker_count": self.speaker_count,
+            "speaker_count": speaker_count,
         }
 
     def close(self) -> None:

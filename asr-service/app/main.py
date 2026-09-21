@@ -567,7 +567,7 @@ def _assemble_standard(app: FastAPI, args) -> None:
     }
 
     # 共性路由（两模式都挂）
-    init_common(service_info)
+    init_common(service_info, speaker_store=speaker_store)
     app.include_router(build_common_router("/v1"))
     app.include_router(build_common_router("/v2"))
     _mount_stream_recording_routes(app, stream_recording_manager)
@@ -886,7 +886,7 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         "capabilities": capabilities,
     }
 
-    init_common(service_info)
+    init_common(service_info, speaker_store=speaker_store)
     app.include_router(build_common_router("/v1"))
     app.include_router(build_common_router("/v2"))
     _mount_stream_recording_routes(app, stream_recording_manager)

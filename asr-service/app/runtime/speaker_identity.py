@@ -45,5 +45,10 @@ class RealtimeIdentityTracker:
             state.confirmed_name = speaker_name
         return state.confirmed_name
 
+    def confirmed_name(self, label: str) -> str | None:
+        """读取已确认姓名，不改变连续识别计数。"""
+        state = self._states.get(label)
+        return state.confirmed_name if state is not None else None
+
     def clear(self) -> None:
         self._states.clear()

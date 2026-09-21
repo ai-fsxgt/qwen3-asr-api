@@ -3,27 +3,38 @@
 两种 serve-mode（standard / vllm）都挂载，使 vllm 模式在不提供离线接口时
 仍能通过 /health、/capabilities 暴露当前运行模式与能力。
 """
+import asyncio
 import logging
+
 from fastapi import APIRouter, HTTPException
+
 from app.api.schemas import HealthResponse, CapabilitiesResponse
 
 logger = logging.getLogger(__name__)
 
 # 运行时依赖，由 main.py 启动时注入
 _service_info = None
+_speaker_store = None
 
 
-def init_common(service_info: dict):
+def init_common(service_info: dict, speaker_store=None):
     """注入服务信息（供 /health、/capabilities 读取）"""
-    global _service_info
+    global _service_info, _speaker_store
     _service_info = service_info
+    _speaker_store = speaker_store
 
 
 async def health_check() -> HealthResponse:
     """健康检查，返回当前运行模式和加载的模型信息（mode-aware）"""
     if _service_info is None:
         raise HTTPException(status_code=503, detail="服务尚未就绪，请稍后重试")
-    return HealthResponse(**_service_info)
+    current_info = dict(_service_info)
+    if _speaker_store is not None and current_info.get("speaker_db_enabled"):
+        speaker_db_health = await asyncio.to_thread(_speaker_store.health)
+        if not speaker_db_health.get("healthy"):
+            current_info["speaker_db_enabled"] = False
+            current_info["speaker_db_backend"] = None
+    return HealthResponse(**current_info)
 
 
 async def get_capabilities() -> CapabilitiesResponse:

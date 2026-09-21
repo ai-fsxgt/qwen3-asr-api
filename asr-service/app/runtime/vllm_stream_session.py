@@ -409,7 +409,10 @@ class VllmStreamSession:
         msg["speaker"] = label
         if self._identify and self._speaker_service is not None:
             try:
-                name = await self._lookup_speaker_name(label, cluster, generation)
+                if duration_ms >= self._spk_min_seg_ms:
+                    name = await self._lookup_speaker_name(label, cluster, generation)
+                else:
+                    name = self._spk_identity_tracker.confirmed_name(label)
             except Exception as exc:
                 logger.warning(f"[vllm-stream] 声纹识别失败，本段仅保留匿名标签: {exc}")
                 name = None

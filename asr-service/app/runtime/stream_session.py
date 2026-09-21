@@ -384,16 +384,20 @@ class StreamSession:
         # 说话人判定：CPU 任务，在 _asr_sem 之外、线程池内执行（体例同标点）
         spk = None
         spk_name = None
+        segment_duration_ms = int(end_ms - start_ms)
         if self._spk_cluster is not None:
             try:
                 emb = await self._in_thread(self._speaker.embed_segment, seg)
-                spk = self._spk_cluster.assign(emb, int(end_ms - start_ms))
+                spk = self._spk_cluster.assign(emb, segment_duration_ms)
             except Exception as e:
                 logger.warning(f"说话人判定失败，本段不标注: {e}")
             # 声纹识别（可选）：以"当时"质心查库，不回改历史（以最新 final 为准）
             if spk is not None and self._identify and self._speaker_service is not None:
                 try:
-                    spk_name = await self._in_thread(self._lookup_speaker_name, spk)
+                    if segment_duration_ms >= self._spk_min_seg_ms:
+                        spk_name = await self._in_thread(self._lookup_speaker_name, spk)
+                    else:
+                        spk_name = self._spk_identity_tracker.confirmed_name(spk)
                 except Exception as e:
                     logger.warning(f"声纹识别失败，本段不带真名: {e}")
         logger.info(f"[stream] final#{self.seg_id} 段[{int(start_ms)},{int(end_ms)}]"
