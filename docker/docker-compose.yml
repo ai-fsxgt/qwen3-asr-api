@@ -9,8 +9,8 @@ services:
       # config.yaml 中显式配置的同名项优先级高于环境变量。
       ASR_API_KEY: ${ASR_API_KEY:-}
       SPEAKER_DATABASE_URL: ${SPEAKER_DATABASE_URL:-}
-    mem_limit: ${ASR_MEMORY_LIMIT:-10g}
-    memswap_limit: ${ASR_MEMORY_SWAP_LIMIT:-10g}
+    mem_limit: 10g
+    memswap_limit: 10g
     volumes:
       # config.yaml 须先存在（用根目录 manage.sh 引导，或从 config.example.yaml 拷贝）。
       - type: bind
@@ -31,4 +31,4 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    restart: unless-stopped
+    restart: always
