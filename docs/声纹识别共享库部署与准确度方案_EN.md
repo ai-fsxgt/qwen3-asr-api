@@ -39,9 +39,9 @@ Production requirements:
 - Do not expose port 5432 to the public Internet.
 - Back up the `qwen3_asr` database and the `postgres_data` volume regularly.
 - Configure both ASR services with the same `SPEAKER_DATABASE_URL`.
-- Keep `speaker_store_audio: false` in multi-instance deployments. If audio
-  retention is required, every instance must mount the same shared
-  `data/speaker_audio` directory so deletion physically removes the files.
+- Multi-instance deployments must keep `speaker_store_audio: false`. The
+  process-local lock cannot coordinate separate instances, so enabling audio
+  retention can leave audio files behind after a speaker is deleted.
 
 Example connection URL:
 
