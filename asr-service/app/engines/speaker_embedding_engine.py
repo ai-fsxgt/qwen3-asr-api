@@ -1,11 +1,14 @@
 """ReDimNet2 speaker embedding engine.
 
 Anonymous diarization uses short overlapping windows. Voice identification uses
-longer windows through ``embed_identity_segment``; both paths share one model,
-one inference lock, and the existing realtime-priority gate.
+longer windows through ``embed_identity_clips`` or ``embed_identity_segment``;
+both paths share one model, one inference lock, and the existing
+realtime-priority gate.
 """
 
+from collections.abc import Iterable
 from contextlib import nullcontext
+from itertools import islice
 import logging
 import os
 import threading
@@ -148,6 +151,52 @@ class SpeakerEmbeddingEngine:
         with self._infer_lock, torch.inference_mode(), self._inference_context():
             return self._model(batch.to(self._device, non_blocking=True))
 
+    def _embed_clips(
+        self,
+        clips: Iterable[np.ndarray],
+        *,
+        realtime: bool,
+        cancelled=None,
+    ) -> np.ndarray:
+        if self._model is None:
+            raise RuntimeError("说话人 embedding 模型未加载，请先调用 load()")
+        self._raise_if_cancelled(cancelled)
+        gate = self._priority_gate
+        section = (
+            gate.realtime_section()
+            if realtime and gate is not None
+            else nullcontext()
+        )
+        outputs = []
+        clip_iterator = iter(clips)
+        with section:
+            while True:
+                self._raise_if_cancelled(cancelled)
+                current_clips = list(islice(clip_iterator, self._BATCH))
+                if not current_clips:
+                    break
+                if not realtime and gate is not None:
+                    if not gate.wait_realtime_clear(cancelled=cancelled):
+                        raise InterruptedError("说话人处理已取消")
+                current = []
+                for clip in current_clips:
+                    waveform = np.asarray(clip, dtype=np.float32).reshape(-1)
+                    if waveform.size == 0:
+                        raise ValueError("声纹窗口没有有效采样")
+                    current.append(
+                        torch.from_numpy(np.ascontiguousarray(waveform))
+                    )
+                target_len = max(item.shape[0] for item in current)
+                batch = torch.stack([
+                    self._circle_pad(item, target_len) for item in current
+                ])
+                outputs.append(self._forward(batch).float().cpu())
+
+        self._raise_if_cancelled(cancelled)
+        if not outputs:
+            return np.zeros((0, self.EMB_DIM), dtype=np.float32)
+        return F.normalize(torch.cat(outputs), dim=1).numpy()
+
     def _embed_windows(
         self,
         wav: np.ndarray,
@@ -156,46 +205,26 @@ class SpeakerEmbeddingEngine:
         realtime: bool,
         cancelled=None,
     ) -> np.ndarray:
-        if self._model is None:
-            raise RuntimeError("说话人 embedding 模型未加载，请先调用 load()")
-        if not windows:
-            return np.zeros((0, self.EMB_DIM), dtype=np.float32)
-
-        self._raise_if_cancelled(cancelled)
         waveform = np.asarray(wav, dtype=np.float32).reshape(-1)
-        clips = []
-        for start, end in windows:
-            self._raise_if_cancelled(cancelled)
-            clip = waveform[
-                max(int(start * self.SAMPLE_RATE), 0):
-                min(int(end * self.SAMPLE_RATE), waveform.size)
-            ]
-            if clip.size == 0:
-                raise ValueError(f"声纹窗口没有有效采样: ({start}, {end})")
-            clips.append(torch.from_numpy(np.ascontiguousarray(clip)))
 
-        gate = self._priority_gate
-        section = (
-            gate.realtime_section()
-            if realtime and gate is not None
-            else nullcontext()
-        )
-        outputs = []
-        with section:
-            for offset in range(0, len(clips), self._BATCH):
+        def iter_clips():
+            for start, end in windows:
                 self._raise_if_cancelled(cancelled)
-                if not realtime and gate is not None:
-                    if not gate.wait_realtime_clear(cancelled=cancelled):
-                        raise InterruptedError("说话人处理已取消")
-                current = clips[offset:offset + self._BATCH]
-                target_len = max(item.shape[0] for item in current)
-                batch = torch.stack([
-                    self._circle_pad(item, target_len) for item in current
-                ])
-                outputs.append(self._forward(batch).float().cpu())
+                clip = waveform[
+                    max(int(start * self.SAMPLE_RATE), 0):
+                    min(int(end * self.SAMPLE_RATE), waveform.size)
+                ]
+                if clip.size == 0:
+                    raise ValueError(
+                        f"声纹窗口没有有效采样: ({start}, {end})"
+                    )
+                yield clip
 
-        self._raise_if_cancelled(cancelled)
-        return F.normalize(torch.cat(outputs), dim=1).numpy()
+        return self._embed_clips(
+            iter_clips(),
+            realtime=realtime,
+            cancelled=cancelled,
+        )
 
     def embed_windows(
         self,
@@ -207,6 +236,19 @@ class SpeakerEmbeddingEngine:
         return self._embed_windows(
             wav,
             windows,
+            realtime=False,
+            cancelled=cancelled,
+        )
+
+    def embed_identity_clips(
+        self,
+        clips: Iterable[np.ndarray],
+        *,
+        cancelled=None,
+    ) -> np.ndarray:
+        """流式处理已分割的离线身份识别窗口。"""
+        return self._embed_clips(
+            clips,
             realtime=False,
             cancelled=cancelled,
         )

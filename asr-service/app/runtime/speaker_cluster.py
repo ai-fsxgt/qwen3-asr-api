@@ -311,17 +311,17 @@ class DiarizationResult:
 
     @property
     def clusters(self) -> list[dict]:
-        """返回每簇质心、语音总时长和原始身份识别语音。
+        """返回每簇质心、语音总时长和身份识别音频索引。
 
-        dur_sec 为簇内窗时间区间的并集长度（滑窗重叠不重复计），
-        是声纹库自动登记质量门槛（≥ speaker_auto_enroll_min_sec）的依据。
+        dur_sec 为簇内窗时间区间的并集长度（滑窗重叠不重复计）；
+        identity_duration_sec 是实际分配的身份识别语音时长。
         """
         out = []
         n_clusters = int(self._labels.max()) + 1 if len(self._labels) else 0
         if n_clusters == 0:
             return out
-        identity_evidence = (
-            self._identity_audio_by_cluster(n_clusters)
+        identity_intervals = (
+            self._identity_intervals_by_cluster(n_clusters)
             if self._waveform is not None
             else None
         )
@@ -336,24 +336,31 @@ class DiarizationResult:
                 "centroid": centroid,
                 "dur_sec": _union_duration([self._windows[j] for j in idx]),
             }
-            if identity_evidence is not None:
-                audio, intervals = identity_evidence[i]
-                cluster["identity_audio"] = audio
+            if identity_intervals is not None:
+                intervals = identity_intervals[i]
+                cluster["identity_waveform"] = self._waveform
+                cluster["identity_sample_rate"] = self._sample_rate
                 cluster["identity_intervals"] = intervals
+                identity_samples = sum(
+                    max(
+                        round((end - start) * self._sample_rate),
+                        0,
+                    )
+                    for start, end in intervals
+                )
                 cluster["identity_duration_sec"] = (
-                    len(audio) / self._sample_rate
+                    identity_samples / self._sample_rate
                 )
             out.append(cluster)
         return out
 
-    def _identity_audio_by_cluster(
+    def _identity_intervals_by_cluster(
         self,
         n_clusters: int,
-    ) -> list[tuple[np.ndarray, list[tuple[float, float]]]]:
-        """把重叠窗口的新增覆盖区间唯一分配给对应簇并拼接语音。"""
+    ) -> list[list[tuple[float, float]]]:
+        """把重叠窗口的新增覆盖区间唯一分配给对应簇。"""
         if self._waveform is None:
             raise RuntimeError("离线身份识别缺少原始音频")
-        chunks: list[list[np.ndarray]] = [[] for _ in range(n_clusters)]
         intervals: list[list[tuple[float, float]]] = [
             [] for _ in range(n_clusters)
         ]
@@ -375,25 +382,11 @@ class DiarizationResult:
             )
             if end_sample > start_sample:
                 label_index = int(label)
-                chunks[label_index].append(
-                    self._waveform[start_sample:end_sample]
-                )
-                intervals[label_index].append((slice_start, end))
-        return [
-            (
-                (
-                    np.ascontiguousarray(np.concatenate(cluster_chunks))
-                    if cluster_chunks
-                    else np.zeros(0, dtype=np.float32)
-                ),
-                cluster_intervals,
-            )
-            for cluster_chunks, cluster_intervals in zip(
-                chunks,
-                intervals,
-                strict=True,
-            )
-        ]
+                intervals[label_index].append((
+                    start_sample / self._sample_rate,
+                    end_sample / self._sample_rate,
+                ))
+        return intervals
 
 
 def _union_duration(intervals: list[tuple[float, float]]) -> float:

@@ -33,7 +33,6 @@ from app.runtime.speaker_store import (
 logger = logging.getLogger(__name__)
 
 QUALITY_HINT_MIN_TEMPLATES = 3   # 建议模板数（不足仅提示，不阻断）
-SPEAKER_SAMPLE_RATE = 16000
 
 
 class SpeakerService:
@@ -498,11 +497,13 @@ class SpeakerService:
         for cluster in clusters:
             if cancelled and cancelled():
                 raise InterruptedError("说话人处理已取消")
-            audio = np.asarray(
-                cluster["identity_audio"],
+            waveform = np.asarray(
+                cluster["identity_waveform"],
                 dtype=np.float32,
             ).reshape(-1)
-            duration_sec = len(audio) / SPEAKER_SAMPLE_RATE
+            sample_rate = int(cluster["identity_sample_rate"])
+            source_intervals = cluster["identity_intervals"]
+            duration_sec = float(cluster["identity_duration_sec"])
             groups = []
             identity_centroid = None
             if duration_sec >= cfg.SPEAKER_IDENTIFY_MIN_SEC:
@@ -512,24 +513,35 @@ class SpeakerService:
                     win=cfg.SPEAKER_IDENTIFY_MIN_SEC,
                     step=cfg.SPEAKER_IDENTIFY_MIN_SEC / 2,
                 )
-                embeddings = self._engine.embed_windows(
-                    audio,
-                    windows,
+                window_intervals = [
+                    self._source_intervals_for_window(
+                        source_intervals,
+                        start,
+                        end,
+                    )
+                    for start, end in windows
+                ]
+                embeddings = self._engine.embed_identity_clips(
+                    (
+                        self._audio_from_source_intervals(
+                            waveform,
+                            intervals,
+                            sample_rate,
+                        )
+                        for intervals in window_intervals
+                    ),
                     cancelled=cancelled,
                 )
                 groups = [
                     (
                         embedding,
                         end - start,
-                        self._source_intervals_for_window(
-                            cluster["identity_intervals"],
-                            start,
-                            end,
-                        ),
+                        intervals,
                     )
-                    for embedding, (start, end) in zip(
+                    for embedding, (start, end), intervals in zip(
                         embeddings,
                         windows,
+                        window_intervals,
                         strict=True,
                     )
                 ]
@@ -596,6 +608,27 @@ class SpeakerService:
             )
             offset += count
         return results
+
+    @staticmethod
+    def _audio_from_source_intervals(
+        waveform: np.ndarray,
+        intervals: list[tuple[float, float]],
+        sample_rate: int,
+    ) -> np.ndarray:
+        """从原始波形按时间区间组装单个身份识别窗口。"""
+        chunks = [
+            waveform[
+                max(round(start * sample_rate), 0):
+                min(round(end * sample_rate), waveform.size)
+            ]
+            for start, end in intervals
+        ]
+        chunks = [chunk for chunk in chunks if chunk.size]
+        if not chunks:
+            return np.zeros(0, dtype=np.float32)
+        if len(chunks) == 1:
+            return chunks[0]
+        return np.concatenate(chunks)
 
     @staticmethod
     def _source_intervals_for_window(
@@ -758,7 +791,8 @@ class SpeakerService:
                                 cancelled=None) -> list[dict]:
         """离线联动入口（识别 + 自动登记）。
 
-        clusters = [{"label","centroid","dur_sec","identity_audio"}]。未命中且开启
+        clusters = [{"label","centroid","dur_sec","identity_waveform",
+                     "identity_intervals"}]。未命中且开启
         speaker_auto_enroll 且簇语音总时长过门槛 → 以「说话人_NN」占位名登记
         （source='auto'；开启自动登记 = 部署方声明已获数据主体同意，consent 同责）。
         已命中的说话人不自动追加模板（防投毒）。登记失败退回匿名，不影响转写。

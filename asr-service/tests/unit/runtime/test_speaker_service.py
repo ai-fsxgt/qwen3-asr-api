@@ -52,6 +52,18 @@ class FakeEngine:
             out.append(unit(i))
         return np.stack(out)
 
+    def embed_identity_clips(self, clips, *, cancelled=None):
+        out = []
+        step = cfg.SPEAKER_IDENTIFY_MIN_SEC / 2
+        for index, clip in enumerate(clips):
+            base_idx = int(
+                round(float(np.asarray(clip).reshape(-1)[0]))
+            ) - 1
+            if self.split_at is not None and index * step >= self.split_at:
+                base_idx += 1
+            out.append(unit(base_idx))
+        return np.stack(out)
+
 
 class FakeSpeakerStore:
     """只实现 SpeakerService 所需契约，避免单元测试依赖外部数据库。"""
@@ -637,11 +649,12 @@ def _cluster(label, vec, dur):
         "label": label,
         "centroid": vec,
         "dur_sec": dur,
-        "identity_audio": np.full(
+        "identity_waveform": np.full(
             int(dur * 16000),
             identity_index + 1,
             dtype=np.float32,
         ),
+        "identity_sample_rate": 16000,
         "identity_intervals": [(0.0, dur)],
         "identity_duration_sec": dur,
     }

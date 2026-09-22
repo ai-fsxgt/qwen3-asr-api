@@ -87,6 +87,21 @@ def test_embed_windows_batching_and_l2_norm():
     assert np.allclose(np.linalg.norm(out, axis=1), 1.0, atol=1e-5)
 
 
+def test_embed_identity_clips_consumes_one_model_batch_at_a_time():
+    eng, model = _engine_with_mock()
+
+    def clips():
+        for index in range(9):
+            if index == 4:
+                assert model.call_count == 1
+            yield np.full(16000 * 5, index, dtype=np.float32)
+
+    out = eng.embed_identity_clips(clips())
+
+    assert out.shape == (9, 192)
+    assert model.call_count == 3
+
+
 def test_embed_windows_short_clip_circle_padded():
     eng, model = _engine_with_mock()
     wav = np.random.default_rng(1).normal(size=16000).astype(np.float32)
