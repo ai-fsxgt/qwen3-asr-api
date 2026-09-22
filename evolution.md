@@ -235,39 +235,27 @@ VAD pause
 
 ---
 
-## 5. 说话人分离：建议升级为独立 diarization 模块
+## 5. 说话人分离：独立的 embedding 与聚类模块
 
-FunASR 可以通过 `spk_model="cam++"` 给句子加说话人标签，官方教程里也有 Paraformer/Fun-ASR-Nano/SenseVoice 加 `cam++` 输出 speaker label 的用法。([ModelScope][4])
-
-但如果你要求 **P0 高优先级**，我建议不要只依赖 FunASR 内置的 `spk_model="cam++"`。更合理的是：
+当前工程不把说话人能力绑定到 ASR 模型，而是使用独立的级联链路：
 
 ```text
-pyannote / NeMo diarization 负责“谁在什么时候说话”
-CAM++ 负责声纹 embedding、说话人库、跨文件身份匹配
+语音区间 -> ReDimNet2-B6 embedding -> 说话人聚类 -> 句子时间轴融合
+                                                -> PostgreSQL/pgvector 声纹身份匹配
 ```
 
-### 推荐选择
+### 当前实现
 
-| 场景                  | 推荐                           |
-| ------------------- | ---------------------------- |
-| 离线高质量会议/访谈          | pyannote speaker diarization |
-| 需要本地、可离线、方便与转写时间戳融合 | pyannote community-1         |
-| 流式/实时 diarization   | NeMo Sortformer              |
-| 需要说话人库、注册声纹、跨文件识别   | CAM++ embedding              |
-| 中文工程集成优先、快速落地       | FunASR + CAM++ 先跑通           |
+| 场景 | 实现 |
+| --- | --- |
+| standard 语音区间 | FSMN-VAD |
+| vLLM 语音区间 | 能量检测 |
+| 声纹 embedding | ReDimNet2-B6（192 维） |
+| 离线说话人分离 | 滑窗 embedding + AHC/谱聚类 + 近簇合并 |
+| 实时说话人分离 | 会话内增量质心聚类，不回改已下发结果 |
+| 真实姓名识别 | ReDimNet2-B6 身份窗口 + PostgreSQL/pgvector 声纹库 |
 
-pyannote 的 `community-1` diarization pipeline 输入 16kHz mono audio，输出 speaker diarization，并强调更好的 speaker assignment/counting、与转写时间戳更容易 reconciliation、支持离线使用。([Hugging Face][5])
-
-NeMo 的 diarization 文档把系统分成端到端 diarization 和级联 diarization；Sortformer 是端到端 diarization 模型，而级联系统由 VAD、speaker embedding、clustering、TS-VAD 等模块组成，并且级联系统在说话人数和会话长度上限制更少。([NVIDIA Docs][6])
-
-所以你的工程上可以这样设计：
-
-```text
-默认：pyannote diarization
-实时：NeMo streaming Sortformer
-轻量/中文快速：FunASR CAM++
-说话人库：CAM++ embedding
-```
+说话人分离只决定匿名标签 A/B/C…，声纹库在此基础上进行真实身份匹配。两者共用 ReDimNet2-B6，但聚类与身份识别保持独立，避免单次识别失败改变转写时间轴。
 
 ---
 
@@ -337,7 +325,7 @@ hard_max_align_window <= 60s
 absolute_forbidden > 180s
 ```
 
-如果要做英文或多语种，也可以引入 WhisperX 作为备用对齐链路。WhisperX 本身就是为长音频转写、VAD cut & merge、forced phoneme alignment、word-level timestamps 设计的系统；论文说明它通过 VAD 和 phoneme forced alignment 解决长音频漂移、幻觉、重复和词级时间戳问题，并实现批量推理提速。([arXiv][7])
+如果要做英文或多语种，也可以引入 WhisperX 作为备用对齐链路。WhisperX 本身就是为长音频转写、VAD cut & merge、forced phoneme alignment、word-level timestamps 设计的系统；论文说明它通过 VAD 和 phoneme forced alignment 解决长音频漂移、幻觉、重复和词级时间戳问题，并实现批量推理提速。([arXiv][4])
 
 ---
 
@@ -427,9 +415,9 @@ overlap speech/music ratio
 
 如果是明显 BGM，建议引入音乐源分离模型。
 
-**Demucs** 是 Meta/Facebook Research 的音乐源分离模型，可以分离 drums、bass、vocals 和 accompaniment；v4 是 Hybrid Transformer Demucs，结合 waveform/spectrogram，并使用 Transformer。([GitHub][8])
+**Demucs** 是 Meta/Facebook Research 的音乐源分离模型，可以分离 drums、bass、vocals 和 accompaniment；v4 是 Hybrid Transformer Demucs，结合 waveform/spectrogram，并使用 Transformer。([GitHub][5])
 
-工程上更方便的选择是 `audio-separator` 或 UVR 模型生态。`audio-separator` 是 Python 包，封装了 UVR 中常用的 MDX-Net、VR Arch、Demucs、MDXC 等模型，可以输出 vocals/instrumental 等 stem，也支持 denoising、de-reverb 等处理。([PyPI][9])
+工程上更方便的选择是 `audio-separator` 或 UVR 模型生态。`audio-separator` 是 Python 包，封装了 UVR 中常用的 MDX-Net、VR Arch、Demucs、MDXC 等模型，可以输出 vocals/instrumental 等 stem，也支持 denoising、de-reverb 等处理。([PyPI][6])
 
 推荐策略：
 
@@ -445,7 +433,7 @@ overlap speech/music ratio
 
 ## 3. 分离后再做轻量 speech enhancement
 
-分离后可以再用 DeepFilterNet 这类模型做轻量增强。DeepFilterNet 是低复杂度 full-band speech enhancement 框架，官方说明支持 48kHz full-band audio，并提供无 Python 依赖的预编译二进制和实时降噪插件。([GitHub][10])
+分离后可以再用 DeepFilterNet 这类模型做轻量增强。DeepFilterNet 是低复杂度 full-band speech enhancement 框架，官方说明支持 48kHz full-band audio，并提供无 Python 依赖的预编译二进制和实时降噪插件。([GitHub][7])
 
 但不要过度增强。
 
@@ -554,7 +542,7 @@ chunk_3 SPEAKER_00
 local_speaker_id -> global_speaker_id
 ```
 
-CAM++ 在这里适合作为 speaker embedding 和说话人库组件。
+ReDimNet2-B6 在这里负责产生可跨 chunk 比较的 speaker embedding，再由全局聚类和声纹库完成说话人关联。
 
 ---
 
@@ -600,8 +588,8 @@ CAM++ 在这里适合作为 speaker embedding 和说话人库组件。
 | ASR   | Qwen3-ASR                      | Whisper large-v3 / SenseVoice / Paraformer |
 | 标点    | Qwen3-ASR 原生标点                 | CT-Punc / CT-Transformer                   |
 | 局部对齐  | Qwen3-ForcedAligner，限制 30–60 秒 | WhisperX / MFA / stable-ts                 |
-| 说话人分离 | pyannote community-1           | NeMo Sortformer / FunASR CAM++             |
-| 说话人库  | CAM++ embedding                | pyannote embedding                         |
+| 说话人分离 | ReDimNet2-B6 + AHC/谱聚类   | 实时会话内增量质心聚类                         |
+| 说话人库  | ReDimNet2-B6 + PostgreSQL/pgvector | —                                      |
 | 推理服务  | vLLM 跑 Qwen3-ASR               | transformers / OpenVINO / ONNXRuntime      |
 
 ---
@@ -614,7 +602,7 @@ CAM++ 在这里适合作为 speaker embedding 和说话人库组件。
 | 人声/音乐分离     | audio-separator + UVR/MDX 模型          | Demucs htdemucs / htdemucs_ft       |
 | 语音增强        | DeepFilterNet                         | NeMo speech enhancement / ESPnet-SE |
 | ASR         | Qwen3-ASR on speech_track             | WhisperX on speech_track            |
-| diarization | original_track 与 speech_track 双路评估    | pyannote / NeMo / CAM++             |
+| diarization | original_track 与 speech_track 双路评估    | ReDimNet2-B6 + 聚类                 |
 | 对齐          | 仍然只做局部 forced alignment               | 失败回退到 VAD/ASR 时间                    |
 
 ---
@@ -689,7 +677,7 @@ FFmpeg
 + FunASR FSMN-VAD
 + Qwen3-ASR
 + CT-Punc 可选
-+ pyannote 或 CAM++
++ ReDimNet2-B6 + 离线/实时聚类
 + Qwen3-ForcedAligner 局部对齐
 ```
 
@@ -743,10 +731,7 @@ P1 = 音频清理/分离层 + P0
 [1]: https://github.com/QwenLM/Qwen3-ASR "GitHub - QwenLM/Qwen3-ASR: Qwen3-ASR is an open-source series of ASR models developed by the Qwen team at Alibaba Cloud, supporting stable multilingual speech/music/song recognition, language detection and timestamp prediction. · GitHub"
 [2]: https://huggingface.co/funasr/fsmn-vad?utm_source=chatgpt.com "funasr/fsmn-vad"
 [3]: https://huggingface.co/funasr/ct-punc?utm_source=chatgpt.com "funasr/ct-punc"
-[4]: https://modelscope.github.io/FunASR/tutorial.html "FunASR Tutorial"
-[5]: https://huggingface.co/pyannote/speaker-diarization-community-1 "pyannote/speaker-diarization-community-1 · Hugging Face"
-[6]: https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/speaker_diarization/intro.html "Speaker Diarization — NVIDIA NeMo Framework User Guide"
-[7]: https://arxiv.org/abs/2303.00747?utm_source=chatgpt.com "WhisperX: Time-Accurate Speech Transcription of Long-Form Audio"
-[8]: https://github.com/facebookresearch/demucs "GitHub - facebookresearch/demucs: Code for the paper Hybrid Spectrogram and Waveform Source Separation · GitHub"
-[9]: https://pypi.org/project/audio-separator/ "audio-separator · PyPI"
-[10]: https://github.com/rikorose/deepfilternet "GitHub - Rikorose/DeepFilterNet: Noise supression using deep filtering · GitHub"
+[4]: https://arxiv.org/abs/2303.00747?utm_source=chatgpt.com "WhisperX: Time-Accurate Speech Transcription of Long-Form Audio"
+[5]: https://github.com/facebookresearch/demucs "GitHub - facebookresearch/demucs: Code for the paper Hybrid Spectrogram and Waveform Source Separation · GitHub"
+[6]: https://pypi.org/project/audio-separator/ "audio-separator · PyPI"
+[7]: https://github.com/rikorose/deepfilternet "GitHub - Rikorose/DeepFilterNet: Noise supression using deep filtering · GitHub"
