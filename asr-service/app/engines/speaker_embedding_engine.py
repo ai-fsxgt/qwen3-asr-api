@@ -68,7 +68,7 @@ class SpeakerEmbeddingEngine:
     MODEL_TAG = "redimnet2_b6_vb2_vox2_cnc2_v0_lm@v1"
     EMB_DIM = 192
     SAMPLE_RATE = 16000
-    _BATCH = 1
+    _BATCH = 4
     _MODEL_FILE = "b6-vb2+vox2+cnc2_v0-lm.pt"
     _MODEL_SHA256 = (
         "287365f6f485b19e65e5176554f8f7123bfa8d85185f3d2c040eab51acec9868"

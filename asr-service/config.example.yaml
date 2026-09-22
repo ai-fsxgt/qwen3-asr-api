@@ -61,6 +61,7 @@ enable_task_store: true     # 任务结果跨重启可查（data/tasks.db）；�
 
 # ── 说话人分离 ──
 enable_speaker: false       # 离线 segment.speaker / 实时 final.speaker（匿名 A/B/C…；ReDimNet2-B6）
+# 启用前请将 b6-vb2+vox2+cnc2_v0-lm.pt 放入 models/speaker/redimnet2-b6/
 # speaker_threshold: 0.5    # 实时在线归簇余弦阈值；更换模型后需用实际数据重新标定
 # speaker_max: 8            # 说话人数上限（实时硬上限；离线谱聚类簇数搜索上界）
 # speaker_min_seg_ms: 1500  # 实时短段门槛（毫秒）：短于此不建新簇/不更新质心

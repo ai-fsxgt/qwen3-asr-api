@@ -39,7 +39,7 @@ huggingface_hub==0.36.2
 
 # 说话人分离/声纹识别（Phase 2，可选能力 --enable-speaker；复用 vLLM 镜像的 torch，无 funasr 冲突）：
 #   scipy / scikit-learn —— 离线聚类（AHC/谱聚类），speaker_cluster 惰性 import
-#   ReDimNet2 源码随应用提供，权重固定下载到 models/speaker/redimnet2-b6
+#   ReDimNet2 源码随应用提供，权重由部署方放入 models/speaker/redimnet2-b6
 # 版本按 Docker vLLM 镜像实测锁定（2026-06-12，vllm/vllm-openai:v0.14.0 内 pip 解析结果）：
 # 下列附加依赖不约束 torch，与 torch 2.9.1+cu128 / numpy 2.2.6 兼容。
 scipy==1.17.1

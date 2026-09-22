@@ -65,10 +65,7 @@ MODEL_LOCAL_MAP = {
     "punc_onnx": os.path.join(PUNC_MODEL_DIR, "ct-transformer-onnx"),
     "asr_ov_0.6b": os.path.join(ASR_MODEL_DIR, "openvino", "0.6b"),
     "asr_ov_1.7b": os.path.join(ASR_MODEL_DIR, "openvino", "1.7b"),
-    "redimnet2_b6": os.environ.get(
-        "REDIMNET2_MODEL_DIR",
-        os.path.join(SPEAKER_MODEL_DIR, "redimnet2-b6"),
-    ),
+    "redimnet2_b6": os.path.join(SPEAKER_MODEL_DIR, "redimnet2-b6"),
 }
 
 # ─── VAD 参数 ───

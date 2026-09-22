@@ -387,7 +387,10 @@ class StreamSession:
         segment_duration_ms = int(end_ms - start_ms)
         if self._spk_cluster is not None:
             try:
-                emb = await self._in_thread(self._speaker.embed_segment, seg)
+                emb = await self._in_thread(
+                    self._speaker.embed_realtime_segment,
+                    seg,
+                )
                 spk = self._spk_cluster.assign(
                     emb,
                     segment_duration_ms,
