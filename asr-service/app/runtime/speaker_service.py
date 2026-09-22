@@ -566,20 +566,28 @@ class SpeakerService:
                 group_decisions,
                 durations,
             )
-            anchors = [
-                {
+            anchors = []
+            for index, (
+                group_decision,
+                (_vector, _duration, intervals),
+            ) in enumerate(zip(group_decisions, groups, strict=True)):
+                if not group_decision.matched:
+                    continue
+                adjacent_decisions = group_decisions[
+                    max(0, index - 1):index
+                ] + group_decisions[index + 1:index + 2]
+                if not any(
+                    adjacent.matched
+                    and adjacent.speaker_id == group_decision.speaker_id
+                    for adjacent in adjacent_decisions
+                ):
+                    continue
+                anchors.append({
                     "speaker_id": group_decision.speaker_id,
                     "name": group_decision.name,
                     "score": group_decision.top1_score,
                     "intervals": intervals,
-                }
-                for group_decision, (
-                    _vector,
-                    _duration,
-                    intervals,
-                ) in zip(group_decisions, groups, strict=True)
-                if group_decision.matched
-            ]
+                })
             results[label] = (
                 decision,
                 detail,

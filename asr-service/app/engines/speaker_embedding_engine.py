@@ -15,7 +15,7 @@ import torch
 import torch.nn.functional as F
 
 from app.config import MODEL_LOCAL_MAP
-from app.utils.model_manager import ensure_model_file
+from app.utils.model_manager import require_model_file
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +70,6 @@ class SpeakerEmbeddingEngine:
     SAMPLE_RATE = 16000
     _BATCH = 1
     _MODEL_FILE = "b6-vb2+vox2+cnc2_v0-lm.pt"
-    _MODEL_URL = (
-        "https://github.com/PalabraAI/redimnet2/releases/download/v1.0.0/"
-        "b6-vb2%2Bvox2%2Bcnc2_v0-lm.pt"
-    )
     _MODEL_SHA256 = (
         "287365f6f485b19e65e5176554f8f7123bfa8d85185f3d2c040eab51acec9868"
     )
@@ -97,8 +93,7 @@ class SpeakerEmbeddingEngine:
     def load(self) -> None:
         local_dir = MODEL_LOCAL_MAP["redimnet2_b6"]
         weight_path = os.path.join(local_dir, self._MODEL_FILE)
-        ensure_model_file(
-            self._MODEL_URL,
+        require_model_file(
             weight_path,
             sha256=self._MODEL_SHA256,
         )

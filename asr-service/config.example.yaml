@@ -60,7 +60,7 @@ enable_task_store: true     # 任务结果跨重启可查（data/tasks.db）；�
 # task_retention_days: 7    # 过期任务清理窗口（天，启动时执行；0 = 永不清理）
 
 # ── 说话人分离 ──
-enable_speaker: false       # 离线 segment.speaker / 实时 final.speaker（匿名 A/B/C…；ReDimNet2-B6，首次自动下载）
+enable_speaker: false       # 离线 segment.speaker / 实时 final.speaker（匿名 A/B/C…；ReDimNet2-B6）
 # speaker_threshold: 0.5    # 实时在线归簇余弦阈值；更换模型后需用实际数据重新标定
 # speaker_max: 8            # 说话人数上限（实时硬上限；离线谱聚类簇数搜索上界）
 # speaker_min_seg_ms: 1500  # 实时短段门槛（毫秒）：短于此不建新簇/不更新质心
@@ -69,8 +69,8 @@ enable_speaker: false       # 离线 segment.speaker / 实时 final.speaker（�
 # ── 声纹库（登记 + 真名识别）──
 enable_speaker_db: false   # 依赖 enable_speaker 且必须配置 api_key（声纹属生物识别信息）；迁移新模型向量后再开启
 # speaker_db_path: data/speakers.db
-speaker_id_threshold: 0.45      # 1:N 开集识别阈 τ_id（低于此为 unknown；向量迁移后需重新标定）
-speaker_id_margin: 0.10        # top1-top2 margin（近邻打架判 unknown，宁缺勿错）
+speaker_id_threshold: 0.65      # 1:N 开集识别阈 τ_id（低于此为 unknown；向量迁移后需重新标定）
+speaker_id_margin: 0.08         # top1-top2 margin（近邻打架判 unknown，宁缺勿错）
 speaker_identify_min_sec: 5.0   # 每个滑动识别窗口的有效语音（秒）
 speaker_enroll_min_sec: 3.0     # 手动登记单样本最短有效语音（VAD 后，秒）
 speaker_auto_enroll_min_sec: 10.0  # 自动登记的簇最短语音总时长（秒）

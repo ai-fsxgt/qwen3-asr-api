@@ -12,11 +12,6 @@ def apply_offline_identities(
 ) -> list[dict]:
     """Apply cluster matches and time-local identity anchors to segments."""
     mapping_by_label = {mapping["label"]: mapping for mapping in mappings}
-    anchors = [
-        anchor
-        for mapping in mappings
-        for anchor in mapping.get("_identity_anchors", [])
-    ]
     for segment in segments:
         cluster_mapping = mapping_by_label.get(segment.get("speaker"))
         if cluster_mapping and cluster_mapping.get("name"):
@@ -25,6 +20,11 @@ def apply_offline_identities(
         votes = {}
         start = float(segment["start"])
         end = float(segment["end"])
+        anchors = (
+            cluster_mapping.get("_identity_anchors", [])
+            if cluster_mapping is not None
+            else []
+        )
         for anchor in anchors:
             overlap = sum(
                 max(0.0, min(end, interval_end) - max(start, interval_start))

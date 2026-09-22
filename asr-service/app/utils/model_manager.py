@@ -1,51 +1,23 @@
 import hashlib
 import logging
 import os
-import shutil
-import tempfile
-import urllib.request
 
 from app.config import MODEL_SOURCE
 
 logger = logging.getLogger(__name__)
 
 
-def ensure_model_file(
-    url: str,
+def require_model_file(
     target_path: str,
     *,
     sha256: str,
 ) -> None:
-    """Download one immutable model file and verify its checksum."""
-    if os.path.isfile(target_path):
-        if _file_sha256(target_path) != sha256:
-            raise RuntimeError(f"模型文件校验失败: {target_path}")
-        logger.info(f"模型已存在: {target_path}")
-        return
-
-    if MODEL_SOURCE == "manual":
-        raise FileNotFoundError(
-            f"模型未找到: {target_path}\n"
-            f"当前配置为手动模式，请从 {url} 下载后放入该路径。"
-        )
-
-    os.makedirs(os.path.dirname(target_path), exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(
-        prefix=f".{os.path.basename(target_path)}.",
-        dir=os.path.dirname(target_path),
-    )
-    os.close(fd)
-    try:
-        logger.info(f"开始下载模型文件: {url} -> {target_path}")
-        with urllib.request.urlopen(url, timeout=60) as response, \
-                open(temp_path, "wb") as temp_file:
-            shutil.copyfileobj(response, temp_file)
-        if _file_sha256(temp_path) != sha256:
-            raise RuntimeError(f"下载的模型文件校验失败: {url}")
-        os.replace(temp_path, target_path)
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+    """Require one immutable model file and verify its checksum."""
+    if not os.path.isfile(target_path):
+        raise FileNotFoundError(f"模型文件不存在: {target_path}")
+    if _file_sha256(target_path) != sha256:
+        raise RuntimeError(f"模型文件校验失败: {target_path}")
+    logger.info(f"模型文件校验通过: {target_path}")
 
 
 def _file_sha256(path: str) -> str:
