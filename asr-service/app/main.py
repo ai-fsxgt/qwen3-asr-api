@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import threading
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.gzip import GZipMiddleware
@@ -337,6 +338,7 @@ def _assemble_standard(app: FastAPI, args) -> None:
 
     # 加载引擎
     device_map = "cuda:0" if device == "cuda" else "cpu"
+    gpu_inference_lock = threading.Lock() if device == "cuda" else None
 
     # VAD 引擎（必须）
     vad_engine = VADEngine()
@@ -356,6 +358,7 @@ def _assemble_standard(app: FastAPI, args) -> None:
             model_size=model_size,
             device=device_map,
             enable_align=enable_align,
+            inference_lock=gpu_inference_lock,
         )
         asr_backend = "qwen_asr"
     try:
@@ -388,6 +391,7 @@ def _assemble_standard(app: FastAPI, args) -> None:
         speaker_engine = SpeakerEmbeddingEngine(
             device=device,
             priority_gate=realtime_priority_gate if stream_enabled else None,
+            inference_lock=gpu_inference_lock,
         )
         try:
             speaker_engine.load()
@@ -698,6 +702,7 @@ def _assemble_vllm(app: FastAPI, args) -> None:
     from app.runtime.vllm_stream_session import VllmStreamBackend
     from app.api.ws_routes import ws_router_stream, init_ws_stream
 
+    gpu_inference_lock = threading.Lock()
     engine = VLLMASREngine(
         model_size=model_size,
         gpu_memory_utilization=cfg.VLLM_GPU_MEMORY_UTILIZATION,
@@ -709,6 +714,7 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         enable_align=cfg.VLLM_ENABLE_ALIGN,
         align_device=cfg.VLLM_ALIGN_DEVICE,
         infer_batch_size=cfg.VLLM_INFER_BATCH_SIZE,
+        inference_lock=gpu_inference_lock,
     )
     try:
         engine.load()
@@ -727,6 +733,7 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         speaker_engine = SpeakerEmbeddingEngine(
             device="cuda",
             priority_gate=realtime_priority_gate,
+            inference_lock=gpu_inference_lock,
         )
         try:
             speaker_engine.load()

@@ -3,6 +3,7 @@
 绕过 load()（不 import qwen_asr），直接注入 mock _model 验证三段式调用序、
 chunk_size_sec 钳制与会话级覆盖。standard venv 即可运行。
 """
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -73,6 +74,12 @@ def _engine_with_model(**kw):
 def test_engine_clamps_init_chunk_size():
     eng = VLLMASREngine(chunk_size_sec=99)
     assert eng.chunk_size_sec == CHUNK_SIZE_SEC_MAX
+
+
+def test_uses_injected_inference_lock():
+    inference_lock = threading.Lock()
+    eng = VLLMASREngine(inference_lock=inference_lock)
+    assert eng._infer_lock is inference_lock
 
 
 def test_new_state_uses_engine_chunk_size():

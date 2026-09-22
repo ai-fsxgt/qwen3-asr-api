@@ -74,10 +74,18 @@ class SpeakerEmbeddingEngine:
         "287365f6f485b19e65e5176554f8f7123bfa8d85185f3d2c040eab51acec9868"
     )
 
-    def __init__(self, *, device: str = "auto", priority_gate=None):
+    def __init__(
+        self,
+        *,
+        device: str = "auto",
+        priority_gate=None,
+        inference_lock=None,
+    ):
         self._device = self._resolve_device(device)
         self._model = None
-        self._infer_lock = threading.Lock()
+        self._infer_lock = (
+            inference_lock if inference_lock is not None else threading.Lock()
+        )
         self._priority_gate = priority_gate
 
     @staticmethod

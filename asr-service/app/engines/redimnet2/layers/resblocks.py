@@ -1,5 +1,5 @@
 # MIT License
-# 
+#
 # Copyright (c) 2024 ID R&D, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -65,29 +65,29 @@ class ResBasicBlock(nn.Module):
         super().__init__()
         # if inc//Gdiv==0:
         #     Gdiv = inc
-        self.conv1 = nn.Conv2d(inc, inc if Gdiv is not None else outc, kernel_size=3, stride=stride, padding=1, bias=False, 
+        self.conv1 = nn.Conv2d(inc, inc if Gdiv is not None else outc, kernel_size=3, stride=stride, padding=1, bias=False,
                                groups=inc//Gdiv if Gdiv is not None else 1)
         if Gdiv is not None:
             self.conv1pw = nn.Conv2d(inc, outc, 1)
         else:
             self.conv1pw = nn.Identity()
-            
+
         self.bn1 = nn.BatchNorm2d(outc)
         self.conv2 = nn.Conv2d(outc, outc, kernel_size=3, padding=1, bias=False, groups=outc//Gdiv if Gdiv is not None else 1)
-        
+
         if Gdiv is not None:
             self.conv2pw = nn.Conv2d(outc, outc, 1)
         else:
             self.conv2pw = nn.Identity()
-            
+
         self.bn2 = nn.BatchNorm2d(outc)
         self.relu = nn.ReLU(inplace=True)
-        
+
         if use_fwSE:
             self.se = fwSEBlock(num_freq, se_channels)
         else:
             self.se = nn.Identity()
-            
+
         if outc != inc:
             self.downsample = nn.Sequential(
                 nn.Conv2d(inc, outc, kernel_size=1, stride=stride, bias=False),
@@ -95,7 +95,7 @@ class ResBasicBlock(nn.Module):
             )
         else:
             self.downsample = nn.Identity()
-        
+
     def forward(self, x):
         residual = x
 

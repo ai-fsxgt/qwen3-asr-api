@@ -33,7 +33,7 @@ venv/bin/python -m pip install -r requirements.txt        # 运行期
 venv/bin/python -m pip install -r requirements-test.txt   # 测试
 ```
 
-> 模型首次启动按需自动下载（ModelScope/HuggingFace），见 [部署指南](deployment.md)。
+> ASR/VAD/标点模型首次启动按需自动下载（ModelScope/HuggingFace）；ReDimNet2 声纹权重需手动准备，见 [部署指南](deployment.md)。
 
 ## 2. 依赖分层
 

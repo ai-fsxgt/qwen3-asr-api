@@ -13,8 +13,10 @@
        暴露成 http://127.0.0.1:PORT/a.wav，服务需允许下载回环地址）
 
 用法：
-  python scripts/compat_e2e.py --base-url http://127.0.0.1:8765 --api-key sk-xxx
-  python scripts/compat_e2e.py --only openai-transcribe-json,dashscope-offline
+  python scripts/compat_e2e.py --audio /path/to/speech.wav \
+    --base-url http://127.0.0.1:8765 --api-key sk-xxx
+  python scripts/compat_e2e.py --audio /path/to/speech.wav \
+    --only openai-transcribe-json,dashscope-offline
   python scripts/compat_e2e.py --audio /path/to/speech.wav --skip dashscope-realtime
 
 退出码：全部通过 0，有失败 1，前置缺失（依赖/音频/服务不可达）2。
@@ -30,12 +32,6 @@ import sys
 import threading
 from urllib.parse import urlparse
 import uuid
-
-# ── 路径：默认音频取仓库内现成的 16k 中文语音样本（scripts/e2e/ → asr-service）──
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_ASR_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
-_DEFAULT_AUDIO = os.path.join(
-    _ASR_ROOT, "models/speaker/campplus/examples/speaker1_a_cn_16k.wav")
 
 # ── 颜色（非 TTY 时关闭）──
 _TTY = sys.stdout.isatty()
@@ -363,7 +359,7 @@ def main():
         description="兼容接口端到端冒烟测试（需服务正在运行并开启 /compat/*）")
     p.add_argument("--base-url", default="http://127.0.0.1:8765", help="服务地址")
     p.add_argument("--api-key", default="", help="Bearer api-key（服务配了才需要）")
-    p.add_argument("--audio", default=_DEFAULT_AUDIO, help="测试音频（默认仓库内 16k 中文样本）")
+    p.add_argument("--audio", help="测试音频路径（执行 check 时必填）")
     p.add_argument("--serve-host", default="127.0.0.1",
                    help="DashScope file_urls 本地 server 的 bind/广告地址（默认回环）")
     p.add_argument("--only", default="", help="只跑这些（逗号分隔 check 名）")
@@ -397,6 +393,10 @@ def main():
         for name in checks:
             print(f"  {name}")
         return 0
+
+    if not args.audio:
+        print(RED("请通过 --audio 指定测试音频"), file=sys.stderr)
+        return 2
 
     only = {s.strip() for s in args.only.split(",") if s.strip()}
     skip = {s.strip() for s in args.skip.split(",") if s.strip()}

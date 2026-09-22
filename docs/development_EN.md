@@ -33,7 +33,7 @@ venv/bin/python -m pip install -r requirements.txt        # runtime
 venv/bin/python -m pip install -r requirements-test.txt   # tests
 ```
 
-> Models auto-download on first start (ModelScope/HuggingFace); see [Deployment](deployment_EN.md).
+> ASR/VAD/punctuation models auto-download on first start (ModelScope/HuggingFace); the ReDimNet2 speaker weight must be prepared manually. See [Deployment](deployment_EN.md).
 
 ## 2. Dependency layers
 

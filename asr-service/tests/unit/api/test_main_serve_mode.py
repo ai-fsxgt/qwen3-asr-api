@@ -65,12 +65,14 @@ def isolated_create_app(tmp_path, monkeypatch):
 def _mock_vllm_engine(monkeypatch):
     """mock vllm 引擎/设备/离线任务层，避免真实 GPU / vLLM 加载 / worker 线程。"""
     import app.main as main
+    captured = {}
     monkeypatch.setattr(main, "detect_device",
                         lambda: {"type": "cuda", "vram_gb": 24.0, "name": "FakeGPU"})
     monkeypatch.setattr(main, "resolve_device", lambda req, device_info=None: "cuda")
 
     class FakeVLLMEngine:
-        def __init__(self, *a, **k): pass
+        def __init__(self, *a, **k):
+            captured["asr_inference_lock"] = k.get("inference_lock")
         def load(self): pass
         @property
         def align_enabled(self): return True       # Phase 1：离线 transcribe 出词级时间戳
@@ -88,6 +90,7 @@ def _mock_vllm_engine(monkeypatch):
         def get_task(self, task_id): return None
 
     monkeypatch.setattr("app.runtime.task_manager.TaskManager", FakeTM)
+    return captured
 
 
 def test_vllm_mode_mounts_stream_and_common(isolated_create_app, monkeypatch):
@@ -670,6 +673,7 @@ def _mock_standard_engines(monkeypatch, *, align_enabled=False):
     import app.main as main
     from fastapi import APIRouter
     import app.config as cfg
+    captured = {}
 
     monkeypatch.setattr(main, "_STANDARD_DEPS_OK", True)
     monkeypatch.setattr(main, "_STANDARD_DEPS_ERR", None, raising=False)
@@ -686,7 +690,9 @@ def _mock_standard_engines(monkeypatch, *, align_enabled=False):
         def load(self): pass
 
     class FakeASR:
-        def __init__(self, *a, **k): self._model = MagicMock()
+        def __init__(self, *a, **k):
+            self._model = MagicMock()
+            captured["asr_inference_lock"] = k.get("inference_lock")
         def load(self): pass
         def batch_transcribe(self, audio_paths, language=None): return []
         @property
@@ -756,15 +762,17 @@ def _mock_standard_engines(monkeypatch, *, align_enabled=False):
     monkeypatch.setattr(main, "init_routes", lambda *a, **k: None)
     monkeypatch.setattr(main, "build_offline_router", lambda prefix, **k: APIRouter(prefix=prefix))
     monkeypatch.setitem(sys.modules, "app.runtime.stream_session", fake_stream_session)
+    return captured
 
 
 def test_standard_mode_speaker_enabled(isolated_create_app, monkeypatch):
     """--enable-speaker 装配成功：capabilities/health 置位（离线+实时同一开关）。"""
     import app.main as main
-    _mock_standard_engines(monkeypatch)
+    captured = _mock_standard_engines(monkeypatch)
 
     class FakeSpeaker:
-        def __init__(self, *a, **k): pass
+        def __init__(self, *a, **k):
+            captured["speaker_inference_lock"] = k.get("inference_lock")
         def load(self): pass
 
     monkeypatch.setattr(
@@ -778,6 +786,7 @@ def test_standard_mode_speaker_enabled(isolated_create_app, monkeypatch):
     assert caps["stream"]["speaker_labels"] is True
     assert caps["stream"]["speaker_identification"] is False
     assert client.get("/v2/health").json()["speaker_enabled"] is True
+    assert captured["asr_inference_lock"] is captured["speaker_inference_lock"]
 
     with client.websocket_connect("/v2/asr/stream") as ws:
         created = ws.receive_json()
@@ -819,7 +828,7 @@ def test_standard_mode_speaker_disabled_by_default(isolated_create_app, monkeypa
 def test_config_speaker_defaults():
     import app.config as cfg
     assert cfg.ENABLE_SPEAKER is False
-    assert cfg.SPEAKER_THRESHOLD == 0.5      # S0 spike 定稿（区间 [0.35, 0.65]）
+    assert cfg.SPEAKER_THRESHOLD == 0.5
     assert cfg.SPEAKER_MAX == 8
     assert cfg.SPEAKER_MIN_SEG_MS == 1500    # S0 spike 定稿（原方案 800 作废）
     assert cfg.SPEAKER_MAX_WINDOWS == 4000
@@ -862,7 +871,7 @@ def test_apply_cli_config_writes_speaker(monkeypatch):
 # ─── V 系列：声纹库降级矩阵四分支 ───
 
 class _OkSpeaker:
-    MODEL_TAG = "campplus_cn_common@v1"
+    MODEL_TAG = "redimnet2_b6_vb2_vox2_cnc2_v0_lm@v1"
     def __init__(self, *a, **k): pass
     def load(self): pass
 
@@ -985,12 +994,12 @@ def test_vllm_mode_speaker_enabled(isolated_create_app, monkeypatch):
     import app.main as main
     from app.runtime.realtime_priority import RealtimePriorityGate
 
-    _mock_vllm_engine(monkeypatch)
-    captured = {}
+    captured = _mock_vllm_engine(monkeypatch)
 
     class FakeSpeaker:
         def __init__(self, *a, **k):
             captured["priority_gate"] = k.get("priority_gate")
+            captured["speaker_inference_lock"] = k.get("inference_lock")
         def load(self): pass
 
     monkeypatch.setattr(
@@ -1007,6 +1016,7 @@ def test_vllm_mode_speaker_enabled(isolated_create_app, monkeypatch):
     assert caps["defaults"]["speaker_min_seg_ms"] == 1500
     assert client.get("/v2/health").json()["speaker_enabled"] is True
     assert isinstance(captured["priority_gate"], RealtimePriorityGate)
+    assert captured["asr_inference_lock"] is captured["speaker_inference_lock"]
 
     with client.websocket_connect("/v2/asr/stream") as ws:
         created = ws.receive_json()

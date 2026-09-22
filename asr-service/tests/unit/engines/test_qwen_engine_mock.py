@@ -34,6 +34,12 @@ def test_is_loaded_property():
     assert eng.is_loaded is True
 
 
+def test_uses_injected_inference_lock():
+    inference_lock = threading.Lock()
+    eng = QwenASREngine(inference_lock=inference_lock)
+    assert eng._infer_lock is inference_lock
+
+
 def test_transcribe_passes_params_with_align():
     eng = QwenASREngine(enable_align=True)
     eng._model = MagicMock()

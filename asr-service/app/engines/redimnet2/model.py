@@ -37,7 +37,7 @@ class FreqEncoder(nn.Module):
     def __init__(self,c,bins):
         super().__init__()
         self.freq_embedder = nn.Embedding(
-            num_embeddings=bins, 
+            num_embeddings=bins,
             embedding_dim=c)
 
     def forward(self,x):
@@ -61,7 +61,7 @@ def _ntuple(n, name="parse"):
 
     parse.__name__ = name
     return parse
-    
+
 _pair = _ntuple(2, "_pair")
 
 
@@ -165,20 +165,20 @@ class ReDimNet2(nn.Module):
 
         self.build(F,C,spec_in_channels,out_channels,stages_setup,group_divisor,
                    compress_tconvs,return_2d_output,use_freq_pos_enc)
-        
+
     def build(self,F,C,spec_in_channels,out_channels,stages_setup,group_divisor,
               compress_tconvs,return_2d_output,use_freq_pos_enc):
         self.F = F
         self.C = C
-        
+
         c = C
         f = F
-        
+
         stt = 1
         sft = 1
 
         max_stt = stt
-        
+
         self.num_stages = len(stages_setup)
 
         append_to1d_before_tcm = not self.use_sdwm
@@ -348,7 +348,7 @@ class ReDimNet2(nn.Module):
             self.fin_to2d = nn.Identity()
             if out_channels is not None:
                 self.head = nn.Conv1d(C*F, out_channels, 1)
-        
+
     def run_stage(self,prev_outs_1d, stage_ind):
         if self._stage_has_dual[stage_ind]:
             pre = getattr(self, f'stage{stage_ind}_pre')
@@ -399,7 +399,7 @@ class ReDimNet2Wrap(nn.Module):
         spec_in_channels = 1, # Phase + Magnitude
         out_channels = None,
         block_1d_type = 'conv+att',
-        block_2d_type = "basic_resnet", 
+        block_2d_type = "basic_resnet",
         compress_tconvs = True,
         return_2d_output = False,
         use_freq_pos_enc = False,
@@ -470,7 +470,7 @@ class ReDimNet2Wrap(nn.Module):
             self.spec = features_tf.TFSpectrogram(**spec_params)
         elif feat_type == 'pt_stft':
             self.spec = features.STFT(**spec_params)
-        
+
         if out_channels is None:
             out_channels = C*F
         else:

@@ -62,7 +62,7 @@ class PosEncConv(nn.Module):
                               groups=C if groups is None else groups)
         self.norm = LayerNorm(C, eps=1e-6, data_format="channels_first")
 
-    def forward(self,x):        
+    def forward(self,x):
         return x + self.norm(self.conv(x))
 
 
@@ -161,8 +161,8 @@ def build_internal_1d_tcm_block(hC, block_type, pos_ker_sz, **kwargs):
 
 
 class TimeContextBlock1d(nn.Module):
-    def __init__(self, 
-        C, 
+    def __init__(self,
+        C,
         hC,
         pos_ker_sz = 59,
         block_type = 'att',
@@ -171,8 +171,8 @@ class TimeContextBlock1d(nn.Module):
         **kwargs
     ):
         super().__init__()
-        assert pos_ker_sz 
-        
+        assert pos_ker_sz
+
         self.red_dim_conv = nn.Sequential(
             nn.Conv1d(C,hC,1),
             LayerNorm(hC, eps=1e-6, data_format="channels_first")

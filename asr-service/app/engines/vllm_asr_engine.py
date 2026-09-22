@@ -36,7 +36,7 @@ class VLLMASREngine:
     def __init__(self, model_size="0.6b", *, gpu_memory_utilization=0.8,
                  max_model_len=None, stream_max_new_tokens=256, chunk_size_sec=1.0,
                  unfixed_chunk_num=2, unfixed_token_num=5, enable_align=True,
-                 align_device="cuda", infer_batch_size=4):
+                 align_device="cuda", infer_batch_size=4, inference_lock=None):
         self._model_size = model_size
         self._gpu_mem = gpu_memory_utilization
         self._max_model_len = max_model_len
@@ -56,8 +56,11 @@ class VLLMASREngine:
         # 取有界小值=逐批对齐、峰值显存随批大小线性下降（块数为 1 的短音频无差异）。
         self._infer_batch_size = int(infer_batch_size)
         self._model = None
-        # vllm.LLM.generate 非并发安全：与路线 B 同思路，用锁串行化（见 §3 并发）
-        self._infer_lock = threading.Lock()
+        # vllm.LLM.generate 非并发安全；GPU 部署时还与声纹引擎共用此锁，
+        # 避免两个模型同时推理导致显存峰值叠加。
+        self._infer_lock = (
+            inference_lock if inference_lock is not None else threading.Lock()
+        )
 
     @property
     def chunk_size_sec(self) -> float:

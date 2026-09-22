@@ -154,6 +154,9 @@ class _FakeSpeakerEngine:
         self.realtime_calls += 1
         return self.embed_segment(audio)
 
+    def embed_realtime_identity_segment(self, audio):
+        return self.embed_segment(audio)
+
 
 class _BoomSpeakerEngine:
     def embed_realtime_segment(self, audio):
@@ -275,6 +278,10 @@ def test_configure_identify_without_ready_service_warns():
             "speaker_id_threshold": 0.5,
         })
         assert set(warnings) == {"identify_speakers", "speaker_id_threshold"}
+        messages = asyncio.run(_feed_sentence(sess))
+        final = next(msg for msg in messages if msg["type"] == "final")
+        assert final["speaker"] == "A"
+        assert sess._spk_cluster._identity_audio[0].size == 0
     finally:
         backend.shutdown()
 
@@ -762,8 +769,8 @@ def test_final_carries_speaker_name_after_duration_and_confirmation_gates():
 
     try:
         finals = asyncio.run(run())
-        assert all("speaker_name" not in msg for msg in finals[:5])
-        assert finals[5]["speaker_name"] == "张三"
+        assert all("speaker_name" not in msg for msg in finals[:4])
+        assert all(msg["speaker_name"] == "张三" for msg in finals[4:])
         assert service.calls == 2
     finally:
         backend.shutdown()
@@ -790,8 +797,8 @@ def test_unknown_speaker_can_match_after_centroid_stabilizes():
 
     try:
         finals = asyncio.run(run())
-        assert all("speaker_name" not in msg for msg in finals[:8])
-        assert finals[8]["speaker_name"] == "张三"
+        assert all("speaker_name" not in msg for msg in finals[:6])
+        assert all(msg["speaker_name"] == "张三" for msg in finals[6:])
     finally:
         backend.shutdown()
 
@@ -817,9 +824,10 @@ def test_shared_store_is_queried_and_two_unknowns_revoke_name():
 
     try:
         finals = asyncio.run(run())
-        assert service.calls == 4
-        assert all(msg["speaker_name"] == "张三" for msg in finals[5:11])
-        assert "speaker_name" not in finals[11]
+        assert service.calls == 5
+        assert all("speaker_name" not in msg for msg in finals[:4])
+        assert all(msg["speaker_name"] == "张三" for msg in finals[4:8])
+        assert all("speaker_name" not in msg for msg in finals[8:])
     finally:
         backend.shutdown()
 

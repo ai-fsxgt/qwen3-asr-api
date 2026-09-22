@@ -140,7 +140,7 @@ class MultiHeadAttention(nn.Module):
 
         attn_output = self.out_proj(attn_output)
         return attn_output
-    
+
 #-------------------------------------------------------------
 # Import activations from hugginface
 #-------------------------------------------------------------
@@ -194,7 +194,7 @@ class QuickGELUActivation(nn.Module):
 class SiLUActivation(nn.Module):
     def forward(self, input: Tensor) -> Tensor:
         return F.silu(input)
-    
+
 class MishActivation(nn.Module):
     def __init__(self):
         super().__init__()
@@ -218,7 +218,7 @@ class ClassInstantier(OrderedDict):
         content = super().__getitem__(key)
         cls, kwargs = content if isinstance(content, tuple) else (content, {})
         return cls(**kwargs)
-    
+
 ACT2CLS = {
     "gelu": GELUActivation,
     "gelu_10": (ClippedGELUActivation, {"min": -10, "max": 10}),
@@ -242,7 +242,7 @@ ACT2FN = ClassInstantier(ACT2CLS)
 #-------------------------------------------------------------
 
 class FeedForward(nn.Module):
-    def __init__(self, 
+    def __init__(self,
             hidden_size:int,
             intermediate_size:int,
             hidden_act:str='gelu_new',
@@ -263,11 +263,11 @@ class FeedForward(nn.Module):
         hidden_states = self.output_dense(hidden_states)
         hidden_states = self.output_dropout(hidden_states)
         return hidden_states
-    
+
 class TransformerEncoderLayer(nn.Module):
-    def __init__(self, 
-            n_state: int, 
-            n_mlp : int, 
+    def __init__(self,
+            n_state: int,
+            n_mlp : int,
             n_head: int,
             channel_last: bool = False,
             act: str = 'gelu_new',
@@ -276,7 +276,7 @@ class TransformerEncoderLayer(nn.Module):
             hid_do:float = 0.0,
             ln_eps:float=1e-6
         ):
-        
+
         hidden_size=n_state
         num_attention_heads=n_head
         intermediate_size=n_mlp
@@ -285,7 +285,7 @@ class TransformerEncoderLayer(nn.Module):
         attention_dropout=att_do
         hidden_dropout=hid_do
         layer_norm_eps=ln_eps
-        
+
         super().__init__()
         self.channel_last = channel_last
         self.attention = MultiHeadAttention(

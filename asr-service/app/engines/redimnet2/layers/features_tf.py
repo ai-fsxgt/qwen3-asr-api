@@ -1,5 +1,5 @@
 # MIT License
-# 
+#
 # Copyright (c) 2024 ID R&D, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -60,7 +60,7 @@ def get_filterbanks(low_freq: int = 20,
     lowmel = hz2mel(low_freq)
     highmel = hz2mel(high_freq)
     melpoints = np.linspace(lowmel, highmel, nfilt + 2)
-    
+
     lower_edge_mel = melpoints[:-2].reshape(1, -1)
     center_mel = melpoints[1:-1].reshape(1, -1)
     upper_edge_mel = melpoints[2:].reshape(1, -1)
@@ -144,7 +144,7 @@ class SpectralFeaturesTF(nn.Module):
         self.low_freq = low_freq
         self.high_freq = high_freq
         self.num_bins = num_bins
-        
+
         self.return_img = return_img
 
         if mode in ['melbanks', 'mfcc']:
@@ -187,9 +187,9 @@ class SpectralFeaturesTF(nn.Module):
             self.image_kernel *= self.window[:, None]
         self.image_kernel = self.image_kernel[:,None,:]
 
-        self.register_buffer('real_kernel_pt', 
+        self.register_buffer('real_kernel_pt',
                              torch.from_numpy(self.real_kernel).permute(2,1,0).float())
-        self.register_buffer('image_kernel_pt', 
+        self.register_buffer('image_kernel_pt',
                              torch.from_numpy(self.image_kernel).permute(2,1,0).float())
 
         if self.features in ['melbanks']:
@@ -200,7 +200,7 @@ class SpectralFeaturesTF(nn.Module):
                                             low_freq=self.low_freq,
                                             high_freq=self.high_freq)
             linear_to_mel_weight_matrix = linear_to_mel_weight_matrix[:,:,None]
-            self.register_buffer('melbanks_pt', 
+            self.register_buffer('melbanks_pt',
                                  torch.from_numpy(linear_to_mel_weight_matrix).permute(1,0,2).float())
 
     def forward(self, inputs):
@@ -209,23 +209,23 @@ class SpectralFeaturesTF(nn.Module):
         inputs = inputs.float()
         if inputs.ndim == 2:
             inputs = inputs.unsqueeze(1)
-            
+
         if self.normalize_signal:
             inputs = (inputs - inputs.mean(dim=2, keepdims=True)) /\
                      (inputs.std(dim=2, keepdims=True, unbiased=False) + self.eps)
-            
+
         real_part = F.conv1d(inputs, self.real_kernel_pt, stride=self.shift, padding=self.shift//2)
         imag_part = F.conv1d(inputs, self.image_kernel_pt, stride=self.shift, padding=self.shift//2)
 
         if self.features == 'complex':
             return [real_part, imag_part]
-        
+
         fft = torch.square(real_part) + torch.square(imag_part)
         if self.sqrt_real_imag:
             fft = torch.sqrt(fft)
-            
+
         feat = fft.clip(self.eps, 1/self.eps)
-        
+
         if self.fft_mode == 'log':
             feat = torch.log(feat)
 
@@ -248,15 +248,15 @@ class LogSpec(nn.Module):
     def __init__(self,eps:float=1e-10):
         super().__init__()
         self.eps = eps
-        
+
     def forward(self,x):
         return x.clip(self.eps,1e+8).log()
-    
+
 class NormalizeAudio(nn.Module):
     def __init__(self,eps:float=1e-10):
         super().__init__()
         self.eps = eps
-        
+
     def forward(self,x):
         if x.ndim == 2:
             x = x.unsqueeze(1)
@@ -304,29 +304,29 @@ class FbankAug(nn.Module):
             mask = mask.unsqueeze(2)
         else:
             mask = mask.unsqueeze(1)
-            
+
         x = x.masked_fill_(mask, 0.0)
         return x.view(*original_size)
 
-    def forward(self, x):    
+    def forward(self, x):
         x = self.mask_along_axis(x, dim=2)
         x = self.mask_along_axis(x, dim=1)
         return x
 
 class TFMelBanks(nn.Module):
-    def __init__(self, 
-        sample_rate=16000, 
-        n_fft=512, 
-        win_length=400, 
+    def __init__(self,
+        sample_rate=16000,
+        n_fft=512,
+        win_length=400,
         hop_length=160,
-        f_min = 20, 
-        f_max = 7600, 
-        n_mels = 80, 
+        f_min = 20,
+        f_max = 7600,
+        n_mels = 80,
         do_spec_aug=False,
         norm_signal=False,
         do_preemph=True,
         freq_start_bin = 0,
-        freq_mask_width = (0, 8), 
+        freq_mask_width = (0, 8),
         time_mask_width = (0, 10),
         eps = 1e-8
     ):
@@ -334,7 +334,7 @@ class TFMelBanks(nn.Module):
         self.torchfbank = torch.nn.Sequential(
             NormalizeAudio(eps) if norm_signal else nn.Identity(),
             PreEmphasis() if do_preemph else nn.Identity(),
-            
+
             SpectralFeaturesTF(
                 frame_length = win_length,
                 frame_step = hop_length,
@@ -369,44 +369,44 @@ class TFMelBanks(nn.Module):
         with torch.no_grad():
             with torch.amp.autocast("cuda", enabled=False):
                 x = self.torchfbank(x)+self.eps
-                x = x.log()   
+                x = x.log()
                 x = x - torch.mean(x, dim=-1, keepdim=True)
                 if self.training:
                     x = self.specaug(x)
         return x.to(xdtype)
 
 class TFSpectrogram(nn.Module):
-    def __init__(self, 
-        sample_rate=16000, 
-        n_fft=512, 
-        win_length=400, 
+    def __init__(self,
+        sample_rate=16000,
+        n_fft=512,
+        win_length=400,
         hop_length=160,
-        f_min = 20, 
-        f_max = 7600, 
-        n_mels = 80, 
+        f_min = 20,
+        f_max = 7600,
+        n_mels = 80,
         window = 'hamming',
         normalize_spectrogram = False,
         normalize_signal = False,
         mode = 'fft',
         fft_mode = 'abs',
         pool_freqs = (2,1),
-                 
+
         do_spec_aug=False,
         norm_signal=False,
         do_preemph=True,
-                 
+
         freq_start_bin = 0,
         num_apply_spec_aug = 1,
-        freq_mask_width = (0, 8), 
+        freq_mask_width = (0, 8),
         time_mask_width = (0, 10),
         eps = 1e-8
     ):
         super(TFSpectrogram, self).__init__()
         self.num_apply_spec_aug = num_apply_spec_aug
         self.spectrogram = torch.nn.Sequential(
-            NormalizeAudio() if norm_signal else nn.Identity(),            
-            PreEmphasis() if do_preemph else nn.Identity(),            
-            
+            NormalizeAudio() if norm_signal else nn.Identity(),
+            PreEmphasis() if do_preemph else nn.Identity(),
+
             SpectralFeaturesTF(
                 frame_length = win_length,
                 frame_step = hop_length,
@@ -421,19 +421,19 @@ class TFSpectrogram(nn.Module):
 
                 normalize_spectrogram = False,
                 normalize_signal = False,
-                
+
                 fft_mode = 'abs',
                 log_mels = False,
                 sqrt_real_imag = False,
                 return_img = False,
             )
         )
-        
+
         if pool_freqs is not None:
             self.pool_freq = nn.AvgPool2d(pool_freqs, stride=pool_freqs)
         else:
             self.pool_freq = nn.Identity()
-            
+
         self.eps = eps
         if do_spec_aug:
             self.specaug = FbankAug(
@@ -449,7 +449,7 @@ class TFSpectrogram(nn.Module):
         with torch.no_grad():
             with torch.cuda.amp.autocast(enabled=False):
                 x = self.spectrogram(x)+self.eps
-                x = x.log()   
+                x = x.log()
                 x = x - torch.mean(x, dim=-1, keepdim=True)
                 if self.training:
                     for _ in range(self.num_apply_spec_aug):

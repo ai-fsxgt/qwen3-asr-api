@@ -1,5 +1,5 @@
 # MIT License
-# 
+#
 # Copyright (c) 2024 ID R&D, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy

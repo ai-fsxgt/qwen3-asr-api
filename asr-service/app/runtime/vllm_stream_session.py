@@ -409,7 +409,11 @@ class VllmStreamSession:
             label = cluster.assign(
                 embedding,
                 duration_ms,
-                identity_audio=(identity_audio if self._identify else None),
+                identity_audio=(
+                    identity_audio
+                    if self._identify and self._speaker_service is not None
+                    else None
+                ),
             )
         except Exception as exc:
             logger.warning(f"[vllm-stream] 说话人归簇失败，本段不标注: {exc}")

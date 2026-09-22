@@ -19,7 +19,7 @@ from app.runtime.speaker_store import (
 )
 
 DATABASE_URL = os.environ.get("TEST_SPEAKER_DATABASE_URL")
-TAG = "campplus_cn_common@v1"
+TAG = "redimnet2_b6_vb2_vox2_cnc2_v0_lm@v1"
 DIM = 192
 
 pytestmark = pytest.mark.skipif(

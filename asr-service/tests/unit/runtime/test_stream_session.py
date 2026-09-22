@@ -389,9 +389,15 @@ class FakeSpeakerEngine:
         v[i] = 1.0
         return v
 
+    def embed_realtime_segment(self, seg):
+        return self.embed_segment(seg)
+
+    def embed_realtime_identity_segment(self, seg):
+        return self.embed_segment(seg)
+
 
 class BoomSpeakerEngine:
-    def embed_segment(self, seg):
+    def embed_realtime_segment(self, seg):
         raise RuntimeError("speaker boom")
 
 
@@ -535,14 +541,14 @@ async def test_final_carries_speaker_name():
         for _ in range(4):
             finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
         assert [msg["speaker"] for msg in finals] == ["A"] * 4
-        assert all("speaker_name" not in msg for msg in finals[:3])
-        assert finals[3]["speaker_name"] == "张三"
+        assert all("speaker_name" not in msg for msg in finals[:2])
+        assert all(msg["speaker_name"] == "张三" for msg in finals[2:])
     finally:
         ex.shutdown(wait=False)
 
 
-async def test_shared_store_is_queried_for_each_independent_evidence_batch():
-    """每累计一批新的 5 秒证据才直查共享库，不重复使用历史证据。"""
+async def test_shared_store_is_queried_for_each_sliding_evidence_window():
+    """每形成一个新的 5 秒滑动证据窗口才直查共享库。"""
     service = FakeSpeakerService()
     s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
                                speaker_service=service, identify=True)
@@ -550,15 +556,15 @@ async def test_shared_store_is_queried_for_each_independent_evidence_batch():
         finals = []
         for _ in range(4):
             finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
-        assert service.calls == 2
-        assert all("speaker_name" not in msg for msg in finals[:3])
-        assert finals[3]["speaker_name"] == "张三"
+        assert service.calls == 3
+        assert all("speaker_name" not in msg for msg in finals[:2])
+        assert all(msg["speaker_name"] == "张三" for msg in finals[2:])
     finally:
         ex.shutdown(wait=False)
 
 
 async def test_unknown_then_hit_progression():
-    """早期 unknown → 后续两批独立证据命中后展示姓名。"""
+    """早期 unknown → 后续两个滑动窗口命中后展示姓名。"""
     service = FakeSpeakerService(names=(None, "张三", "张三"))
     s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
                                speaker_service=service, identify=True)
@@ -566,8 +572,8 @@ async def test_unknown_then_hit_progression():
         finals = []
         for _ in range(6):
             finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
-        assert all("speaker_name" not in msg for msg in finals[:5])
-        assert finals[5]["speaker_name"] == "张三"
+        assert all("speaker_name" not in msg for msg in finals[:3])
+        assert all(msg["speaker_name"] == "张三" for msg in finals[3:])
     finally:
         ex.shutdown(wait=False)
 
@@ -580,9 +586,10 @@ async def test_two_unknown_results_revoke_confirmed_name():
         finals = []
         for _ in range(8):
             finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
-        assert service.calls == 4
-        assert all(msg["speaker_name"] == "张三" for msg in finals[3:7])
-        assert "speaker_name" not in finals[7]
+        assert service.calls == 7
+        assert all("speaker_name" not in msg for msg in finals[:2])
+        assert all(msg["speaker_name"] == "张三" for msg in finals[2:4])
+        assert all("speaker_name" not in msg for msg in finals[4:])
     finally:
         ex.shutdown(wait=False)
 
@@ -606,6 +613,7 @@ async def test_identify_without_service_no_name():
         msgs = await _collect(s.feed_audio(_pcm_ms(3000)))
         assert msgs[0]["speaker"] == "A"
         assert "speaker_name" not in msgs[0]
+        assert s._spk_cluster._identity_audio[0].size == 0
     finally:
         ex.shutdown(wait=False)
 

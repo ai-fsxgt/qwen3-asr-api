@@ -186,7 +186,7 @@ def test_warnings_identify_when_no_speaker_db():
 
 # ── 说话人分离 / 识别（Phase 2，mock 引擎/服务，复用真实 speaker_cluster）──
 class _SpeakerEngine:
-    """mock CAM++：所有窗回放同一归一化向量 → cluster_offline 归为单簇 A。"""
+    """Mock 声纹引擎：所有窗返回同一归一化向量，归为单簇 A。"""
     EMB_DIM = 192
 
     def embed_windows(self, wav, windows, *, cancelled=None):

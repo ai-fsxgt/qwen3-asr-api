@@ -1,5 +1,5 @@
 # MIT License
-# 
+#
 # Copyright (c) 2024 ID R&D, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -54,7 +54,7 @@ class to2d(nn.Module):
 
 class to1d_tfopt(nn.Module):
     def forward(self,x):
-        bs,c,t,f = x.size() 
+        bs,c,t,f = x.size()
         return x.permute((0,3,1,2)).reshape((bs,c*f,t))
 
 class to2d_tfopt(nn.Module):

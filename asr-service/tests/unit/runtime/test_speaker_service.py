@@ -38,9 +38,17 @@ class FakeEngine:
         self.split_at = split_at
 
     def embed_windows(self, wav, windows, *, cancelled=None):
+        sample_value = float(np.asarray(wav).reshape(-1)[0])
+        base_idx = (
+            int(round(sample_value)) - 1
+            if sample_value >= 1.0
+            else self.vec_idx
+        )
         out = []
         for st, _ in windows:
-            i = self.vec_idx + (1 if self.split_at is not None and st >= self.split_at else 0)
+            i = base_idx + (
+                1 if self.split_at is not None and st >= self.split_at else 0
+            )
             out.append(unit(i))
         return np.stack(out)
 
@@ -623,15 +631,19 @@ def test_map_clusters_never_auto_enrolls(env, store):
 
 # ─── map_and_enroll_clusters（离线联动：识别 + 自动登记）───
 
-def _cluster(label, vec, dur, evidence=None):
+def _cluster(label, vec, dur):
+    identity_index = int(np.argmax(vec))
     return {
         "label": label,
         "centroid": vec,
         "dur_sec": dur,
-        "evidence": (
-            [{"embedding": vec, "dur_sec": dur}]
-            if evidence is None else evidence
+        "identity_audio": np.full(
+            int(dur * 16000),
+            identity_index + 1,
+            dtype=np.float32,
         ),
+        "identity_intervals": [(0.0, dur)],
+        "identity_duration_sec": dur,
     }
 
 
@@ -682,9 +694,11 @@ def test_offline_short_cluster_stays_anonymous_even_when_voiceprint_matches(
     svc = make_service(store)
     svc.enroll("张三", None, [_src(env)], consent=True)
     out = svc.map_and_enroll_clusters([_cluster("A", unit(0), 4.0)])
-    assert out == [
-        {"label": "A", "speaker_id": None, "name": None, "score": None}
-    ]
+    assert {
+        key: out[0][key]
+        for key in ("label", "speaker_id", "name", "score")
+    } == {"label": "A", "speaker_id": None, "name": None, "score": None}
+    assert out[0]["_identity_anchors"] == []
 
 
 def test_offline_missing_evidence_does_not_fallback_to_centroid(env, store):
@@ -703,20 +717,14 @@ def test_offline_missing_evidence_does_not_fallback_to_centroid(env, store):
 def test_offline_inconsistent_evidence_stays_anonymous(env, store):
     store.enroll_speaker("甲", None, [unit(0)], [6.0], consent=True)
     store.enroll_speaker("乙", None, [unit(1)], [6.0], consent=True)
-    svc = make_service(store)
+    svc = make_service(store, engine=FakeEngine(split_at=2.5))
     centroid = (unit(0) + unit(1)) / np.sqrt(2)
-    out = svc.map_and_enroll_clusters([_cluster(
-        "A",
-        centroid,
-        10.0,
-        evidence=[
-            {"embedding": unit(0), "dur_sec": 5.0},
-            {"embedding": unit(1), "dur_sec": 5.0},
-        ],
-    )])
-    assert out == [
-        {"label": "A", "speaker_id": None, "name": None, "score": None}
-    ]
+    out = svc.map_and_enroll_clusters([_cluster("A", centroid, 10.0)])
+    assert {
+        key: out[0][key]
+        for key in ("label", "speaker_id", "name", "score")
+    } == {"label": "A", "speaker_id": None, "name": None, "score": None}
+    assert out[0]["_identity_anchors"]
 
 
 def test_auto_enroll_serializes_identify_and_enroll(

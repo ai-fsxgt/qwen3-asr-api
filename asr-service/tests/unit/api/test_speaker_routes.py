@@ -29,7 +29,7 @@ SPEAKER_ROW = {
 }
 SPEAKER_DETAIL = {
     "id": "a" * 32, "name": "张三", "note": "n", "source": "manual",
-    "model_tag": "campplus_cn_common@v1",
+    "model_tag": "redimnet2_b6_vb2_vox2_cnc2_v0_lm@v1",
     "created_at": CREATED_AT,
     "updated_at": CREATED_AT,
     "templates": [{"id": 1, "dur_sec": 5.0, "created_at": CREATED_AT}],

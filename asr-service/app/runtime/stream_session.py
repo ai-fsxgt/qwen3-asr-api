@@ -381,7 +381,7 @@ class StreamSession:
                 text = await self._in_thread(self._punc.restore, text)
             except Exception as e:
                 logger.warning(f"标点恢复失败，使用原始文本: {e}")
-        # 说话人判定：CPU 任务，在 _asr_sem 之外、线程池内执行（体例同标点）
+        # 说话人判定在 _asr_sem 之外的线程池执行；GPU 路径由引擎共享锁串行。
         spk = None
         spk_name = None
         segment_duration_ms = int(end_ms - start_ms)
@@ -394,7 +394,11 @@ class StreamSession:
                 spk = self._spk_cluster.assign(
                     emb,
                     segment_duration_ms,
-                    identity_audio=(seg if self._identify else None),
+                    identity_audio=(
+                        seg
+                        if self._identify and self._speaker_service is not None
+                        else None
+                    ),
                 )
             except Exception as e:
                 logger.warning(f"说话人判定失败，本段不标注: {e}")

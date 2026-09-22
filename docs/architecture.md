@@ -49,7 +49,7 @@ asr-service/
 │       ├── config_file.py         # config.yaml 发现/引导生成/校验/合并
 │       ├── model_manager.py       # 模型下载管理
 │       └── openvino_model_downloader.py  # OpenVINO 模型下载
-├── models/                        # 模型存放（自动下载，不提交 Git）
+├── models/                        # 模型存放（ReDimNet2 手动准备，其余按需下载；不提交 Git）
 ├── data/                          # 任务持久化库（tasks.db，不提交 Git）
 ├── cache/                         # 运行时缓存（上传文件、音频切片）
 ├── logs/                          # 日志文件

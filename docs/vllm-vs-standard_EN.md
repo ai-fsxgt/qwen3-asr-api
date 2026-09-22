@@ -37,7 +37,7 @@
 
 ### 2.3 Speaker diarization / identification
 - Speaker capabilities (`--enable-speaker` / voiceprint DB `--enable-speaker-db`) are **supported by both offline and realtime paths in both modes**: realtime emits anonymous `speaker` only on sentence-level `final` events and adds `speaker_name` when a voiceprint matches; unstable short segments may remain unlabeled, and `partial` never carries a speaker.
-- vLLM uses the same CAM++ voiceprint engine, but replaces FSMN-VAD with energy detection for offline speech regions and realtime endpointing (dependency-neutral, no funasr, coarser boundaries). At sentence end, realtime extracts one embedding for that sentence and clusters it online; it never blocks or revises already-emitted partials.
+- vLLM uses the ReDimNet2-B6 voiceprint engine on GPU and replaces FSMN-VAD with energy detection for offline speech regions and realtime endpointing (dependency-neutral, no funasr, coarser boundaries). At sentence end, realtime extracts one embedding for that sentence and clusters it online; it never blocks or revises already-emitted partials.
 
 ### 2.4 Compatibility APIs (OpenAI / DashScope)
 - Offline compatibility (OpenAI `audio/transcriptions`, DashScope recorded-file recognition) is **supported in both modes**.
@@ -64,7 +64,7 @@
 | Offline `/v2/asr` | ✅ | ✅ (same contract) |
 | Segmentation | FSMN-VAD fine segmentation | punctuation-first (word-timestamp positioning) |
 | Punctuation | CT-Transformer (can disable) | model-native (always on, not separately disableable) |
-| Speaker diarization / ID | ✅ (FSMN-VAD + CAM++; realtime final) | ✅ (energy endpoint + CAM++; realtime final) |
+| Speaker diarization / ID | ✅ (FSMN-VAD + ReDimNet2-B6; realtime final) | ✅ (energy endpoint + ReDimNet2-B6; realtime final) |
 | Compat offline (OpenAI/DashScope) | ✅ | ✅ |
 | Compat realtime — whole sentence | ✅ (needs `--enable-stream`) | ✅ (with compat switches, no `--enable-stream`) |
 | Compat realtime — per-token/intermediate | ❌ | ✅ DashScope intermediate / OpenAI delta(best-effort) |

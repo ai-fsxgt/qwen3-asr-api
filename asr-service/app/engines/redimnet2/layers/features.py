@@ -1,5 +1,5 @@
 # MIT License
-# 
+#
 # Copyright (c) 2024 ID R&D, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -28,7 +28,7 @@ class NormalizeAudio(nn.Module):
     def __init__(self,eps:float=1e-6):
         super().__init__()
         self.eps = eps
-        
+
     def forward(self,x):
         if x.ndim == 2:
             x = x.unsqueeze(1)
@@ -77,38 +77,38 @@ class FbankAug(nn.Module):
             mask = mask.unsqueeze(2)
         else:
             mask = mask.unsqueeze(1)
-            
+
         x = x.masked_fill_(mask, 0.0)
         return x.view(*original_size)
 
-    def forward(self, x):    
+    def forward(self, x):
         x = self.mask_along_axis(x, dim=2)
         x = self.mask_along_axis(x, dim=1)
         return x
 
 class MelBanks(nn.Module):
-    def __init__(self, 
-        sample_rate=16000, 
-        n_fft=512, 
-        win_length=400, 
+    def __init__(self,
+        sample_rate=16000,
+        n_fft=512,
+        win_length=400,
         hop_length=160,
-        f_min = 20, 
-        f_max = 7600, 
-        n_mels=80, 
+        f_min = 20,
+        f_max = 7600,
+        n_mels=80,
         do_spec_aug=False,
         norm_signal=False,
         do_preemph=True,
         spec_norm='mn',
         freq_start_bin = 0,
         num_apply_spec_aug = 1,
-        freq_mask_width = (0, 8), 
+        freq_mask_width = (0, 8),
         time_mask_width = (0, 10),
     ):
         super(MelBanks, self).__init__()
         self.num_apply_spec_aug = num_apply_spec_aug
         self.torchfbank = torch.nn.Sequential(
-            NormalizeAudio() if norm_signal else nn.Identity(),            
-            PreEmphasis() if do_preemph else nn.Identity(),            
+            NormalizeAudio() if norm_signal else nn.Identity(),
+            PreEmphasis() if do_preemph else nn.Identity(),
             torchaudio.transforms.MelSpectrogram(sample_rate=sample_rate, n_fft=n_fft, win_length=win_length, hop_length=hop_length, \
                                                  f_min = f_min, f_max = f_max, n_mels=n_mels, window_fn=torch.hamming_window),
             )
@@ -135,7 +135,7 @@ class MelBanks(nn.Module):
         x = x.float()
         with torch.no_grad(), torch.amp.autocast('cuda', enabled=False):
             x = self.torchfbank(x)+1e-6
-            x = x.log()   
+            x = x.log()
             # print(f"spec : {x.size()}")
             # x = x - torch.mean(x, dim=-1, keepdim=True)
             x = self.spec_norm(x)

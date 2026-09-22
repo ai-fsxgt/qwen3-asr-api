@@ -16,6 +16,7 @@ class QwenASREngine:
         model_size: str = "0.6b",
         device: str = "cuda:0",
         enable_align: bool = True,
+        inference_lock=None,
     ):
         self._model_size = model_size
         self._device = device
@@ -24,7 +25,9 @@ class QwenASREngine:
         # Qwen3ASRModel.generate 非线程安全：prefill 写 self.rope_deltas、
         # decode 步回读（modeling_qwen3_asr.py:1221/1224），并发调用会交叉污染
         # 位置编码（同形状静默劣化、异形状崩溃）。离线/流式路径共用此锁串行化。
-        self._infer_lock = threading.Lock()
+        self._infer_lock = (
+            inference_lock if inference_lock is not None else threading.Lock()
+        )
 
     def load(self):
         from qwen_asr import Qwen3ASRModel

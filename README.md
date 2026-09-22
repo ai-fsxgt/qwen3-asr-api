@@ -11,14 +11,14 @@ A simple, fast and efficient speech recognition API service based on Qwen3-ASR. 
 - ⚡ **Fast startup, fast transcription** - The service starts quickly; long-audio transcription takes far less time than the audio duration — especially on GPU, while CPU mode stays efficient thanks to OpenVINO INT8 quantization
 - **Real-time Transcription** - WebSocket streaming endpoint, sentence-by-sentence results for microphone / streamed audio
 - **vLLM Native Streaming Engine** *(new in v2.1.0, optional)* - a separate GPU-only serving mode (`--serve-mode vllm`) with real-time incremental partial→final decoding within each sentence, plus long-audio chunked transcription — see [vLLM vs Standard](docs/vllm-vs-standard_EN.md)
-- **Speaker Diarization** - Offline / real-time transcripts annotated with anonymous speaker labels A/B/C… (CAM++ voiceprint model, CPU inference)
+- **Speaker Diarization** - Offline / real-time transcripts annotated with anonymous speaker labels A/B/C… (ReDimNet2-B6 voiceprint model; standard follows the selected device, vLLM uses GPU)
 - **Shared Voiceprint Database** - Multiple services share voiceprints through PostgreSQL/pgvector; enrolled speakers show real names, while unknown speakers are not auto-enrolled by default (authentication required)
 - **Far-field Filtering / Tunable Params** - Real-time segment-level energy/SNR gating reduces far-field and ambient false triggers; speaker, endpointing and output params can be overridden per request/session
 - **OpenAI / DashScope Compatible APIs** - Point your base_url at this service to integrate the OpenAI / Alibaba Cloud DashScope ecosystem (offline + realtime) — no business-code changes
 - **Async Tasks + Persistence** - Submit and poll for results; task results queryable across restarts (tasks.db)
 - **Web UI** - Modern interface (Vue 3 + Naive UI, dark theme): offline transcription, real-time transcription, speaker management, auto-refreshing task history and offline documentation center
 - **Flexible Configuration** - Four priority layers: YAML config file / CLI arguments / environment variables
-- **Out-of-the-box** - One-click installation and deployment, automatic model download, config file auto-generated on first startup
+- **Out-of-the-box** - One-click installation and deployment, automatic ASR/VAD/punctuation model download, config file auto-generated on first startup (the ReDimNet2 weight is prepared manually)
 - **Long Audio Support** - Audio files from 1s to 4 hours with automatic VAD segmentation
 - **Multi-format Support** - WAV / MP3 / FLAC / M4A / AAC / OGG and more
 - **Timestamps** - Sentence-level / word-level timestamps (GPU mode)

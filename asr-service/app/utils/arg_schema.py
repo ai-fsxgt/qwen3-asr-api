@@ -380,9 +380,9 @@ ARG_SPECS = (
     ArgSpec(
         key="speaker_threshold", flags=("--speaker-threshold",), default=0.5, type=float,
         group="说话人分离",
-        help="实时在线归簇余弦阈值，实测可用区间 [0.35, 0.65] (default: 0.5)",
-        help_en="Realtime online clustering cosine threshold; usable range "
-                "[0.35, 0.65] (default: 0.5)",
+        help="实时在线归簇余弦阈值，换模型后需用实际数据重新标定 (default: 0.5)",
+        help_en="Realtime online clustering cosine threshold; recalibrate with "
+                "real data after changing models (default: 0.5)",
     ),
     ArgSpec(
         key="speaker_max", flags=("--speaker-max",), default=8, type=int,

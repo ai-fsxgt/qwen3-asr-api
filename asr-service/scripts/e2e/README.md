@@ -11,7 +11,7 @@
 
 ```bash
 cd asr-service/scripts/e2e
-./run.sh
+./run.sh --audio /path/to/speech.wav
 ```
 
 首次运行自动创建 `.venv`（已 gitignore）并装 `requirements.txt`，随后起 mock 服务并跑全部
@@ -29,16 +29,16 @@ python -m app.main --enable-openai-api --enable-dashscope-api --enable-stream \
 再对它跑（自带 `--base-url` 时不起 mock）：
 
 ```bash
-./run.sh --base-url http://127.0.0.1:8765 --api-key sk-xxx
+./run.sh --audio /path/to/speech.wav \
+  --base-url http://127.0.0.1:8765 --api-key sk-xxx
 ```
 
 ## 常用
 
 ```bash
 ./run.sh --list                                   # 列出所有 check
-./run.sh --only openai-realtime,dashscope-realtime
-./run.sh --skip dashscope-offline
-./run.sh --audio /path/to/speech.wav
+./run.sh --audio /path/to/speech.wav --only openai-realtime,dashscope-realtime
+./run.sh --audio /path/to/speech.wav --skip dashscope-offline
 ```
 
 退出码：全部通过 0、有失败 1、前置缺失 2。

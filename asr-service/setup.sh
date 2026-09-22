@@ -182,7 +182,7 @@ echo "[INFO] Installing project dependencies..."
 pip install -r requirements.txt
 
 # 6. Create necessary directories
-mkdir -p models/asr/0.6b models/asr/1.7b models/align/0.6b models/vad/fsmn models/vad/fsmn-onnx models/punc/ct-transformer models/punc/ct-transformer-onnx logs
+mkdir -p models/asr/0.6b models/asr/1.7b models/align/0.6b models/vad/fsmn models/vad/fsmn-onnx models/punc/ct-transformer models/punc/ct-transformer-onnx models/speaker/redimnet2-b6 logs
 
 # 7. Select model download method
 echo ""
