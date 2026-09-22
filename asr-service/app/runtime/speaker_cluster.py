@@ -127,29 +127,42 @@ class OnlineSpeakerClusterer:
             return self._durations_ms[idx] / 1000.0
         return 0.0
 
-    def take_identity_audio(
+    def take_identity_audio_windows(
         self,
         label: str,
         min_duration_sec: float,
         sample_rate: int = 16000,
-    ) -> np.ndarray | None:
-        """取最近一段身份语音，并保留重叠部分供下一滑窗复用。"""
+        max_windows: int = 1,
+    ) -> list[np.ndarray]:
+        """取最近的身份语音滑窗，并保留尾部重叠供下一批复用。"""
         idx = _label_index(label)
         if not 0 <= idx < len(self._identity_audio):
-            return None
+            return []
         required_samples = int(min_duration_sec * sample_rate)
         audio = self._identity_audio[idx]
         if audio.size < required_samples:
-            return None
-        clip = np.ascontiguousarray(audio[-required_samples:])
+            return []
         step_samples = int(min_duration_sec * sample_rate / 2)
-        retained_samples = max(required_samples - step_samples, 0)
+        available = 1 + (audio.size - required_samples) // step_samples
+        count = min(available, max(int(max_windows), 1))
+        latest_start = audio.size - required_samples
+        first_start = latest_start - (count - 1) * step_samples
+        clips = [
+            np.ascontiguousarray(
+                audio[
+                    first_start + index * step_samples:
+                    first_start + index * step_samples + required_samples
+                ]
+            )
+            for index in range(count)
+        ]
+        retained_samples = required_samples - step_samples
         self._identity_audio[idx] = (
-            clip[-retained_samples:].copy()
+            audio[-retained_samples:].copy()
             if retained_samples
             else np.zeros(0, dtype=np.float32)
         )
-        return clip
+        return clips
 
 
 # ─── 离线全局聚类 ───
