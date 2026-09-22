@@ -388,7 +388,11 @@ class StreamSession:
         if self._spk_cluster is not None:
             try:
                 emb = await self._in_thread(self._speaker.embed_segment, seg)
-                spk = self._spk_cluster.assign(emb, segment_duration_ms)
+                spk = self._spk_cluster.assign(
+                    emb,
+                    segment_duration_ms,
+                    identity_audio=(seg if self._identify else None),
+                )
             except Exception as e:
                 logger.warning(f"说话人判定失败，本段不标注: {e}")
             # 声纹识别（可选）：用包含本段的新语音证据查库，不回改历史。
@@ -425,13 +429,15 @@ class StreamSession:
         cluster = self._spk_cluster      # 本地引用：release() 并发置 None 防护
         if cluster is None:
             return None
-        evidence = cluster.take_identity_evidence(
+        identity_audio = cluster.take_identity_audio(
             spk,
             cfg.SPEAKER_IDENTIFY_MIN_SEC,
+            _TARGET_SR,
         )
-        if evidence is None:
+        if identity_audio is None:
             return self._spk_identity_tracker.confirmed_name(spk)
-        embedding, duration_sec = evidence
+        embedding = self._speaker.embed_realtime_identity_segment(identity_audio)
+        duration_sec = len(identity_audio) / _TARGET_SR
         mapping = self._speaker_service.map_clusters(
             [{"label": spk, "centroid": embedding, "dur_sec": duration_sec}],
             id_threshold=self._spk_id_threshold, id_margin=self._spk_id_margin)

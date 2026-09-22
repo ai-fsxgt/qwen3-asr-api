@@ -58,7 +58,7 @@ _UNSUPPORTED_KEYS = (
 class _SegmentAudioBuffer:
     """当前 UI 分段的有界 PCM 块。
 
-    append 只做一次精确大小拷贝，避免切片长期持有客户端大帧；合并延迟到 CAM++ 线程。
+    append 只做一次精确大小拷贝，避免切片长期持有客户端大帧；合并延迟到声纹线程。
     last_active_samples 用于裁掉端点判停前的尾静音，内部短暂停顿仍完整保留。
     """
 
@@ -90,7 +90,7 @@ def _embed_speaker_segment(speaker, audio: _SegmentAudioBuffer):
         return None
     embedding = speaker.embed_realtime_segment(wav)
     duration_ms = int(wav.size * 1000 / _TARGET_SR)
-    return embedding, duration_ms
+    return embedding, duration_ms, wav
 
 
 def _map_speaker_identity(
@@ -367,14 +367,19 @@ class VllmStreamSession:
         service = self._speaker_service
         if service is None:
             return None
-        evidence = cluster.take_identity_evidence(
+        identity_audio = cluster.take_identity_audio(
             label,
             cfg.SPEAKER_IDENTIFY_MIN_SEC,
+            _TARGET_SR,
         )
-        if evidence is None:
+        if identity_audio is None:
             return self._spk_identity_tracker.confirmed_name(label)
-        embedding, duration_sec = evidence
         try:
+            embedding = await self._in_speaker_thread(
+                self._speaker.embed_realtime_identity_segment,
+                identity_audio,
+            )
+            duration_sec = len(identity_audio) / _TARGET_SR
             match = await self._in_speaker_thread(
                 _map_speaker_identity,
                 service,
@@ -399,9 +404,13 @@ class VllmStreamSession:
         cluster = self._spk_cluster
         if cluster is None:
             return msg
-        embedding, duration_ms = embedded
+        embedding, duration_ms, identity_audio = embedded
         try:
-            label = cluster.assign(embedding, duration_ms)
+            label = cluster.assign(
+                embedding,
+                duration_ms,
+                identity_audio=(identity_audio if self._identify else None),
+            )
         except Exception as exc:
             logger.warning(f"[vllm-stream] 说话人归簇失败，本段不标注: {exc}")
             return msg

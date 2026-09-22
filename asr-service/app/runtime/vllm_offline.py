@@ -5,7 +5,7 @@ transcribe → 标点优先分段 → （可选）说话人分离/识别叠加 �
 同形的 result（segments / full_text / words / speaker / speakers / warnings）。
 
 设计要点（见 docs/plan/features/20260612_vllm_offline_asr/）：
-- 不依赖 funasr：分段用模型原生标点 + 词级时间戳定位；说话人用 CAM++ + scipy/sklearn 聚类。
+- 不依赖 funasr：分段用模型原生标点 + 词级时间戳定位；说话人用 ReDimNet2 + scipy/sklearn 聚类。
 - 顶层不 import vllm/qwen_asr/torch（仅经传入的 engine/speaker_engine 间接调用），依赖中性，
   standard venv 可单测（mock 引擎）。切块也经 engine.split_chunks（qwen_asr 在引擎侧惰性 import）。
 - 长音频按静音边界逐块转写：转写阶段(0.1→0.85)逐块报进度 + 块间查取消 + 压峰值显存；
@@ -18,6 +18,7 @@ import re
 
 from app import config as cfg
 from app.pipeline.audio_preprocessor import convert_to_wav, get_audio_duration
+from app.runtime.speaker_identity import apply_offline_identities
 from app.utils.result_parser import extract_text, extract_words
 
 logger = logging.getLogger(__name__)
@@ -277,7 +278,13 @@ def _diarize_and_identify(speaker_engine, speaker_service, energy_vad, wav_path,
         labels = cluster_offline(embeddings, max_speakers=cfg.SPEAKER_MAX)
         if cancelled and cancelled():
             raise InterruptedError("说话人处理已取消")
-        diar = DiarizationResult(windows, labels, embeddings)
+        diar = DiarizationResult(
+            windows,
+            labels,
+            embeddings,
+            waveform=wav,
+            sample_rate=sr,
+        )
         for seg in segments:
             label = diar.label_for(seg["start"], seg["end"])
             if label is not None:
@@ -300,14 +307,14 @@ def _diarize_and_identify(speaker_engine, speaker_service, energy_vad, wav_path,
                 cancelled=cancelled)
             if cancelled and cancelled():
                 return speakers
-            name_of = {m["label"]: m for m in mapping}
-            for seg in segments:
-                m = name_of.get(seg.get("speaker"))
-                if m and m.get("name"):
-                    seg["speaker_name"] = m["name"]
-            speakers = mapping
-            named = sum(1 for m in mapping if m.get("name"))
-            logger.info(f"[vllm-offline] 声纹识别完成: {named}/{len(mapping)} 簇有名")
+            speakers = apply_offline_identities(
+                segments,
+                mapping,
+            )
+            named = sum(1 for segment in segments if segment.get("speaker_name"))
+            logger.info(
+                f"[vllm-offline] 声纹识别完成: {named}/{len(segments)} 段有名"
+            )
         except Exception as e:
             logger.warning(f"声纹识别失败，跳过: {e}")
 

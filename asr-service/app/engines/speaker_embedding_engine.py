@@ -1,3 +1,10 @@
+"""ReDimNet2 speaker embedding engine.
+
+Anonymous diarization uses short overlapping windows. Voice identification uses
+longer windows through ``embed_identity_segment``; both paths share one model,
+one inference lock, and the existing realtime-priority gate.
+"""
+
 from contextlib import nullcontext
 import logging
 import os
@@ -6,187 +13,252 @@ import threading
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torchaudio.compliance.kaldi as Kaldi
 
-from app.utils.model_manager import ensure_model_modelscope
-from app.config import MODEL_LOCAL_MAP, MODELSCOPE_ONLY_REPO_MAP
+from app.config import MODEL_LOCAL_MAP
+from app.utils.model_manager import ensure_model_file
 
 logger = logging.getLogger(__name__)
 
-# 3D-Speaker diarization 生产默认滑窗（spike 验证）
-WIN_SEC = 1.5
-STEP_SEC = 0.75
+DIARIZATION_WIN_SEC = 1.5
+DIARIZATION_STEP_SEC = 0.75
+IDENTITY_WIN_SEC = 5.0
+IDENTITY_STEP_SEC = 2.5
+
+# Existing clustering call sites import these aliases.
+WIN_SEC = DIARIZATION_WIN_SEC
+STEP_SEC = DIARIZATION_STEP_SEC
 
 
-def make_windows(start_sec: float, end_sec: float,
-                 win: float = WIN_SEC, step: float = STEP_SEC) -> list[tuple[float, float]]:
-    """滑窗切分（秒），逻辑对齐 3D-Speaker chunk()：窗长落在 (win-step, win]。
-
-    补丁：整段 ≤ win-step 时上游产生 0 窗，此处返回整段作 1 窗，避免短段永远无标签。
-    """
+def make_windows(
+    start_sec: float,
+    end_sec: float,
+    win: float = DIARIZATION_WIN_SEC,
+    step: float = DIARIZATION_STEP_SEC,
+) -> list[tuple[float, float]]:
+    """Split one speech interval into overlapping diarization windows."""
     out = []
-    t = start_sec
-    while t + win < end_sec + step:
-        out.append((t, min(t + win, end_sec)))
-        t += step
+    position = start_sec
+    while position + win < end_sec + step:
+        out.append((position, min(position + win, end_sec)))
+        position += step
     if not out and end_sec > start_sec:
         out.append((start_sec, end_sec))
     return out
 
 
-class SpeakerEmbeddingEngine:
-    """CAM++ 声纹 embedding 引擎（CPU）。窗级批量提取，输出 L2 归一化的 [N,192]。
+def make_identity_windows(
+    start_sec: float,
+    end_sec: float,
+    win: float = IDENTITY_WIN_SEC,
+    step: float = IDENTITY_STEP_SEC,
+) -> list[tuple[float, float]]:
+    """Return complete identity windows, excluding a short trailing fragment."""
+    windows = []
+    position = start_sec
+    while position + win <= end_sec:
+        windows.append((position, position + win))
+        position += step
+    return windows
 
-    纯 torch 加载（vendored app/engines/campplus + torch.load 权重），
-    FBank 用 torchaudio.compliance.kaldi（80mel + CMN），不依赖 modelscope pipeline / funasr。
-    """
+
+class SpeakerEmbeddingEngine:
+    """ReDimNet2-B6 speaker embedder with normalized 192-d outputs."""
 
     BACKEND = "pytorch"
-    # 声纹库模板兼容性标识（V 系列衔接面）：权重/特征/归一化任一变更须升版本
-    MODEL_TAG = "campplus_cn_common@v1"
+    MODEL_TAG = "redimnet2_b6_vb2_vox2_cnc2_v0_lm@v1"
     EMB_DIM = 192
     SAMPLE_RATE = 16000
-    _BATCH = 64
+    _BATCH = 1
+    _MODEL_FILE = "b6-vb2+vox2+cnc2_v0-lm.pt"
+    _MODEL_URL = (
+        "https://github.com/PalabraAI/redimnet2/releases/download/v1.0.0/"
+        "b6-vb2%2Bvox2%2Bcnc2_v0-lm.pt"
+    )
+    _MODEL_SHA256 = (
+        "287365f6f485b19e65e5176554f8f7123bfa8d85185f3d2c040eab51acec9868"
+    )
 
-    def __init__(self, *, priority_gate=None):
-        self._model_key = "campplus"
+    def __init__(self, *, device: str = "auto", priority_gate=None):
+        self._device = self._resolve_device(device)
         self._model = None
-        # 共享实例跨会话/跨任务调用，模型 forward 必须串行。
         self._infer_lock = threading.Lock()
-        # vLLM 模式注入独立门控：实时段优先，离线在 batch 边界让路。
         self._priority_gate = priority_gate
 
-    def load(self):
-        local_dir = MODEL_LOCAL_MAP[self._model_key]
-        repo_id = MODELSCOPE_ONLY_REPO_MAP[self._model_key]
-        ensure_model_modelscope(repo_id, local_dir)
+    @staticmethod
+    def _resolve_device(device: str) -> torch.device:
+        selected = "cuda" if device == "auto" and torch.cuda.is_available() else device
+        if selected == "auto":
+            selected = "cpu"
+        resolved = torch.device(selected)
+        if resolved.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("ReDimNet2 配置为 CUDA，但当前环境没有可用 GPU")
+        return resolved
 
-        weight_path = os.path.join(local_dir, "campplus_cn_common.bin")
-        size = os.path.getsize(weight_path) if os.path.exists(weight_path) else 0
-        if size < 20 * 1024 * 1024:
+    def load(self) -> None:
+        local_dir = MODEL_LOCAL_MAP["redimnet2_b6"]
+        weight_path = os.path.join(local_dir, self._MODEL_FILE)
+        ensure_model_file(
+            self._MODEL_URL,
+            weight_path,
+            sha256=self._MODEL_SHA256,
+        )
+
+        checkpoint = torch.load(
+            weight_path,
+            map_location="cpu",
+            weights_only=True,
+        )
+        from app.engines.redimnet2 import ReDimNet2Wrap
+
+        model = ReDimNet2Wrap(**checkpoint["model_config"])
+        result = model.load_state_dict(checkpoint["state_dict"])
+        if result.missing_keys or result.unexpected_keys:
             raise RuntimeError(
-                f"CAM++ 权重异常（{size} B，疑似 LFS 指针或下载不完整）: {weight_path}"
+                "ReDimNet2 权重与模型结构不一致: "
+                f"missing={result.missing_keys}, unexpected={result.unexpected_keys}"
             )
-
-        from app.engines.campplus import CAMPPlus
-        model = CAMPPlus(feat_dim=80, embedding_size=self.EMB_DIM)
-        state = torch.load(weight_path, map_location="cpu", weights_only=True)
-        model.load_state_dict(state)
         model.eval()
-        self._model = model
-        logger.info(f"说话人 embedding 模型已加载 (PyTorch/CPU): {local_dir}")
+        self._model = model.to(self._device)
+        logger.info(
+            "说话人 embedding 模型已加载 "
+            f"(ReDimNet2-B6/{self._device.type}, tag={self.MODEL_TAG})"
+        )
 
     @staticmethod
-    def _fbank(wav: torch.Tensor) -> torch.Tensor:
-        """[T] float32 → [frames, 80]；与 3D-Speaker FBank 等价：kaldi fbank + CMN。"""
-        feat = Kaldi.fbank(wav.unsqueeze(0), num_mel_bins=80,
-                           sample_frequency=SpeakerEmbeddingEngine.SAMPLE_RATE, dither=0)
-        return feat - feat.mean(0, keepdim=True)
-
-    @staticmethod
-    def _circle_pad(x: torch.Tensor, target_len: int) -> torch.Tensor:
-        """循环补齐至 target_len（对齐 3D-Speaker circle_pad）。"""
-        if x.shape[0] >= target_len:
-            return x[:target_len]
-        n = -(-target_len // x.shape[0])
-        return torch.cat([x] * n)[:target_len]
+    def _circle_pad(waveform: torch.Tensor, target_len: int) -> torch.Tensor:
+        if waveform.shape[0] >= target_len:
+            return waveform[:target_len]
+        repeats = -(-target_len // waveform.shape[0])
+        return torch.cat([waveform] * repeats)[:target_len]
 
     @staticmethod
     def _raise_if_cancelled(cancelled) -> None:
         if cancelled is not None and cancelled():
             raise InterruptedError("说话人处理已取消")
 
-    def _embed_windows(self, wav: np.ndarray, windows: list[tuple[float, float]],
-                       *, realtime: bool, cancelled=None) -> np.ndarray:
-        """按窗口批量提取；有优先门控时，离线在每个 batch 前为实时任务让路。
+    def _inference_context(self):
+        if self._device.type != "cuda":
+            return nullcontext()
+        return torch.autocast(device_type="cuda", dtype=torch.float16)
 
-        wav 须为 16k 单声道 float32（实时侧 final 段、离线侧 soundfile 读出均天然满足）。
-        """
+    def _forward(self, batch: torch.Tensor) -> torch.Tensor:
+        with self._infer_lock, torch.inference_mode(), self._inference_context():
+            return self._model(batch.to(self._device, non_blocking=True))
+
+    def _embed_windows(
+        self,
+        wav: np.ndarray,
+        windows: list[tuple[float, float]],
+        *,
+        realtime: bool,
+        cancelled=None,
+    ) -> np.ndarray:
         if self._model is None:
             raise RuntimeError("说话人 embedding 模型未加载，请先调用 load()")
         if not windows:
             return np.zeros((0, self.EMB_DIM), dtype=np.float32)
 
         self._raise_if_cancelled(cancelled)
+        waveform = np.asarray(wav, dtype=np.float32).reshape(-1)
+        clips = []
+        for start, end in windows:
+            self._raise_if_cancelled(cancelled)
+            clip = waveform[
+                max(int(start * self.SAMPLE_RATE), 0):
+                min(int(end * self.SAMPLE_RATE), waveform.size)
+            ]
+            if clip.size == 0:
+                raise ValueError(f"声纹窗口没有有效采样: ({start}, {end})")
+            clips.append(torch.from_numpy(np.ascontiguousarray(clip)))
+
         gate = self._priority_gate
-        section = gate.realtime_section() if realtime and gate is not None else nullcontext()
+        section = (
+            gate.realtime_section()
+            if realtime and gate is not None
+            else nullcontext()
+        )
+        outputs = []
         with section:
-            sr = self.SAMPLE_RATE
-            clips = []
-            for st, ed in windows:
+            for offset in range(0, len(clips), self._BATCH):
                 self._raise_if_cancelled(cancelled)
-                clip = wav[max(int(st * sr), 0):int(ed * sr)]
-                if len(clip) == 0:
-                    # 防御：窗落在音频界外（理论不应发生），以零样本占位保持与窗表对齐
-                    clip = np.zeros(1, dtype=np.float32)
-                clips.append(torch.from_numpy(np.ascontiguousarray(clip)).float())
-            # fbank 帧长 25ms（400 样本），全调用统一补齐长度，保持既有 embedding 语义。
-            max_len = max(max(c.shape[0] for c in clips), 400)
+                if not realtime and gate is not None:
+                    if not gate.wait_realtime_clear(cancelled=cancelled):
+                        raise InterruptedError("说话人处理已取消")
+                current = clips[offset:offset + self._BATCH]
+                target_len = max(item.shape[0] for item in current)
+                batch = torch.stack([
+                    self._circle_pad(item, target_len) for item in current
+                ])
+                outputs.append(self._forward(batch).float().cpu())
 
-            if gate is None:
-                feats_list = []
-                for clip in clips:
-                    self._raise_if_cancelled(cancelled)
-                    feats_list.append(self._fbank(self._circle_pad(clip, max_len)))
-                feats = torch.stack(feats_list)
-                outs = []
-                with self._infer_lock, torch.no_grad():
-                    for i in range(0, len(feats), self._BATCH):
-                        self._raise_if_cancelled(cancelled)
-                        outs.append(self._model(feats[i:i + self._BATCH]))
-            else:
-                # 特征和 forward 都按 batch 推进；离线不会再跨全部窗口长期占用模型锁。
-                outs = []
-                with torch.no_grad():
-                    for i in range(0, len(clips), self._BATCH):
-                        self._raise_if_cancelled(cancelled)
-                        if not realtime:
-                            if not gate.wait_realtime_clear(cancelled=cancelled):
-                                raise InterruptedError("说话人处理已取消")
-                        batch = clips[i:i + self._BATCH]
-                        feats = torch.stack([
-                            self._fbank(self._circle_pad(c, max_len)) for c in batch
-                        ])
-                        self._raise_if_cancelled(cancelled)
-                        if not realtime:
-                            if not gate.wait_realtime_clear(cancelled=cancelled):
-                                raise InterruptedError("说话人处理已取消")
-                        with self._infer_lock:
-                            self._raise_if_cancelled(cancelled)
-                            outs.append(self._model(feats))
         self._raise_if_cancelled(cancelled)
-        return F.normalize(torch.cat(outs), dim=1).numpy()
+        return F.normalize(torch.cat(outputs), dim=1).numpy()
 
-    def embed_windows(self, wav: np.ndarray,
-                      windows: list[tuple[float, float]], *,
-                      cancelled=None) -> np.ndarray:
-        """按窗口批量提取；取消时抛出 InterruptedError，否则返回归一化 [N,192]。"""
+    def embed_windows(
+        self,
+        wav: np.ndarray,
+        windows: list[tuple[float, float]],
+        *,
+        cancelled=None,
+    ) -> np.ndarray:
         return self._embed_windows(
-            wav, windows, realtime=False, cancelled=cancelled)
-
-    def _embed_segment(self, wav: np.ndarray, *, realtime: bool) -> np.ndarray:
-        embs = self._embed_windows(
             wav,
-            make_windows(0.0, len(wav) / self.SAMPLE_RATE),
+            windows,
+            realtime=False,
+            cancelled=cancelled,
+        )
+
+    def _embed_segment(
+        self,
+        wav: np.ndarray,
+        *,
+        realtime: bool,
+        identity: bool,
+    ) -> np.ndarray:
+        duration = len(wav) / self.SAMPLE_RATE
+        if duration <= 0:
+            raise ValueError("说话人音频不能为空")
+        windows = (
+            [(0.0, duration)]
+            if identity
+            else make_windows(0.0, duration)
+        )
+        embeddings = self._embed_windows(
+            wav,
+            windows,
             realtime=realtime,
             cancelled=None,
         )
-        mean = embs.mean(axis=0)
+        mean = embeddings.mean(axis=0)
         norm = float(np.linalg.norm(mean))
         return mean / norm if norm > 0 else mean
 
     def embed_segment(self, wav: np.ndarray) -> np.ndarray:
-        """整段提取：滑窗 embedding 均值 + 重归一化。返回 [192]。"""
-        return self._embed_segment(wav, realtime=False)
+        """Embed one segment for anonymous diarization."""
+        return self._embed_segment(wav, realtime=False, identity=False)
 
     def embed_realtime_segment(self, wav: np.ndarray) -> np.ndarray:
-        """实时整段提取；有优先门控时，阻止离线任务继续抢占后续 batch。"""
-        return self._embed_segment(wav, realtime=True)
+        """Embed one realtime segment for anonymous diarization."""
+        return self._embed_segment(wav, realtime=True, identity=False)
 
-    def unload(self):
+    def embed_identity_segment(self, wav: np.ndarray) -> np.ndarray:
+        """Embed one raw identity-evidence clip."""
+        return self._embed_segment(wav, realtime=False, identity=True)
+
+    def embed_realtime_identity_segment(self, wav: np.ndarray) -> np.ndarray:
+        """Embed realtime identity evidence under the priority gate."""
+        return self._embed_segment(wav, realtime=True, identity=True)
+
+    def unload(self) -> None:
         self._model = None
+        if self._device.type == "cuda":
+            torch.cuda.empty_cache()
         logger.info("说话人 embedding 模型已卸载")
 
     @property
     def is_loaded(self) -> bool:
         return self._model is not None
+
+    @property
+    def device(self) -> str:
+        return str(self._device)
