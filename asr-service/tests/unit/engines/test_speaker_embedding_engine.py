@@ -1,6 +1,6 @@
 """app/engines/speaker_embedding_engine.py 单元测试（mock 模型 forward，不加载真权重）。
 
-覆盖：make_windows 边界、_fbank 形状与 CMN、embed_windows 批切分与 L2 归一、
+覆盖：make_windows 边界、共享推理锁、embed_windows 批切分与 L2 归一、
 embed_segment 均值重归一化、实时任务在 batch 边界优先。精度类断言不在此。
 """
 import threading
@@ -48,15 +48,12 @@ def test_make_windows_zero_length_segment():
     assert make_windows(2.0, 2.0) == []
 
 
-# ─── _fbank ───
+# ─── 推理锁 ───
 
-def test_fbank_shape_and_cmn():
-    wav = torch.randn(16000)  # 1s
-    feat = SpeakerEmbeddingEngine._fbank(wav)
-    assert feat.shape[1] == 80
-    assert feat.shape[0] > 90  # 25ms 帧长 / 10ms 步长 → 约 98 帧
-    # CMN：每维均值为 0
-    assert torch.allclose(feat.mean(0), torch.zeros(80), atol=1e-4)
+def test_uses_injected_inference_lock():
+    inference_lock = threading.Lock()
+    eng = SpeakerEmbeddingEngine(inference_lock=inference_lock)
+    assert eng._infer_lock is inference_lock
 
 
 # ─── embed_windows ───
@@ -83,11 +80,26 @@ def test_embed_windows_empty_windows():
 def test_embed_windows_batching_and_l2_norm():
     eng, model = _engine_with_mock()
     wav = np.random.default_rng(0).normal(size=16000 * 2).astype(np.float32)
-    windows = [(0.0, 1.5)] * 130  # 130 窗 → 64+64+2 三批
+    windows = [(0.0, 1.5)] * 130  # ReDimNet2 小批推理：130 窗 → 33 批
     out = eng.embed_windows(wav, windows)
     assert out.shape == (130, 192)
-    assert model.call_count == 3
+    assert model.call_count == 33
     assert np.allclose(np.linalg.norm(out, axis=1), 1.0, atol=1e-5)
+
+
+def test_embed_identity_clips_consumes_one_model_batch_at_a_time():
+    eng, model = _engine_with_mock()
+
+    def clips():
+        for index in range(9):
+            if index == 4:
+                assert model.call_count == 1
+            yield np.full(16000 * 5, index, dtype=np.float32)
+
+    out = eng.embed_identity_clips(clips())
+
+    assert out.shape == (9, 192)
+    assert model.call_count == 3
 
 
 def test_embed_windows_short_clip_circle_padded():
@@ -108,16 +120,10 @@ def test_embed_segment_mean_renormalized():
     assert np.isclose(np.linalg.norm(emb), 1.0, atol=1e-5)
 
 
-def test_priority_gate_preserves_embedding_values(monkeypatch):
-    def fake_fbank(wav):
-        base = wav[:2].reshape(2, 1)
-        return base.repeat(1, 80)
+def test_priority_gate_preserves_embedding_values():
+    def fake_model(waveforms):
+        return waveforms[:, :1].repeat(1, 192)
 
-    def fake_model(feats):
-        flat = feats.flatten(1)
-        return torch.cat([flat, flat[:, :32]], dim=1)
-
-    monkeypatch.setattr(SpeakerEmbeddingEngine, "_fbank", staticmethod(fake_fbank))
     plain = SpeakerEmbeddingEngine()
     prioritized = SpeakerEmbeddingEngine(priority_gate=RealtimePriorityGate())
     plain._model = fake_model
@@ -131,7 +137,7 @@ def test_priority_gate_preserves_embedding_values(monkeypatch):
     assert np.array_equal(actual, expected)
 
 
-def test_realtime_embedding_preempts_offline_at_batch_boundary(monkeypatch):
+def test_realtime_embedding_preempts_offline_at_batch_boundary():
     gate = RealtimePriorityGate()
     eng = SpeakerEmbeddingEngine(priority_gate=gate)
     first_offline_started = threading.Event()
@@ -139,23 +145,18 @@ def test_realtime_embedding_preempts_offline_at_batch_boundary(monkeypatch):
     order = []
     errors = []
 
-    def fake_fbank(wav):
-        value = float(wav[0])
-        return torch.full((2, 80), value)
-
-    def fake_model(feats):
-        kind = "realtime" if float(feats[0, 0, 0]) > 0.5 else "offline"
+    def fake_model(waveforms):
+        kind = "realtime" if float(waveforms[0, 0]) > 0.5 else "offline"
         order.append(kind)
         if kind == "offline" and not first_offline_started.is_set():
             first_offline_started.set()
             assert release_first_batch.wait(timeout=2)
-        return torch.ones(feats.shape[0], 192)
+        return torch.ones(waveforms.shape[0], 192)
 
-    monkeypatch.setattr(eng, "_fbank", fake_fbank)
     eng._model = fake_model
     offline_wav = np.zeros(16000, dtype=np.float32)
     realtime_wav = np.ones(16000, dtype=np.float32)
-    offline_windows = [(0.0, 1.0)] * 130       # 64 + 64 + 2，共三个 batch
+    offline_windows = [(0.0, 1.0)] * 12       # 4 + 4 + 4，共三个 batch
 
     def run(fn, *args):
         try:
@@ -226,4 +227,7 @@ def test_offline_embedding_stops_when_cancelled_while_waiting(monkeypatch):
 
 def test_model_tag_constant():
     # V 系列衔接面：模板兼容性标识必须存在且非空
-    assert SpeakerEmbeddingEngine.MODEL_TAG == "campplus_cn_common@v1"
+    assert (
+        SpeakerEmbeddingEngine.MODEL_TAG
+        == "redimnet2_b6_vb2_vox2_cnc2_v0_lm@v1"
+    )

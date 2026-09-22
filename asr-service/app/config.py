@@ -52,7 +52,6 @@ MODELSCOPE_ONLY_REPO_MAP = {
     "vad_onnx": "iic/speech_fsmn_vad_zh-cn-16k-common-onnx",
     "punc": "iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
     "punc_onnx": "iic/punc_ct-transformer_zh-cn-common-vocab272727-onnx",
-    "campplus": "iic/speech_campplus_sv_zh-cn_16k-common",
 }
 
 # 模型本地子目录
@@ -66,7 +65,7 @@ MODEL_LOCAL_MAP = {
     "punc_onnx": os.path.join(PUNC_MODEL_DIR, "ct-transformer-onnx"),
     "asr_ov_0.6b": os.path.join(ASR_MODEL_DIR, "openvino", "0.6b"),
     "asr_ov_1.7b": os.path.join(ASR_MODEL_DIR, "openvino", "1.7b"),
-    "campplus": os.path.join(SPEAKER_MODEL_DIR, "campplus"),
+    "redimnet2_b6": os.path.join(SPEAKER_MODEL_DIR, "redimnet2-b6"),
 }
 
 # ─── VAD 参数 ───
@@ -163,19 +162,19 @@ STREAM_SNR_MIN_DB = 6.0             # 自适应信噪比门（dB）：段相对�
 # ─── 说话人分离 ───
 
 ENABLE_SPEAKER = False          # 总开关（--enable-speaker，由 main.py argparse 覆盖）
-SPEAKER_THRESHOLD = 0.5         # 实时在线归簇余弦阈值（S0 spike 实测可用区间 [0.35, 0.65]）
+SPEAKER_THRESHOLD = 0.5         # 实时在线归簇余弦阈值；更换模型后需用实际数据重新标定
 SPEAKER_MAX = 8                 # 说话人数上限（实时硬上限；离线为谱聚类簇数搜索上界）
-SPEAKER_MIN_SEG_MS = 1500       # 短于此的段不建新簇/不更新质心（S0 spike EXP7 标定）
+SPEAKER_MIN_SEG_MS = 1500       # 短于此的段不建新簇/不更新质心
 SPEAKER_MAX_WINDOWS = 4000      # 离线滑窗数上限，超出均匀抽稀（谱聚类 N² 内存防护）
 
 # ─── 声纹库 ───
 
 ENABLE_SPEAKER_DB = False           # 总开关（依赖 enable_speaker 引擎加载成功 + api_key 非空）
 SPEAKER_DATABASE_URL = os.environ.get("SPEAKER_DATABASE_URL", "")
-SPEAKER_ID_THRESHOLD = 0.45         # 1:N 开集识别阈 τ_id（严于官方 1:1 验证阈 0.31）
+SPEAKER_ID_THRESHOLD = 0.45         # 1:N 开集识别阈 τ_id；向量迁移后需用实际数据重新标定
 SPEAKER_ID_MARGIN = 0.10            # top1-top2 margin δ（近邻打架时宁缺勿错）
-SPEAKER_IDENTIFY_MIN_SEC = 5.0      # 单个独立识别证据批次的最短有效语音（秒）
-SPEAKER_REALTIME_CONFIRMATIONS = 2  # 实时连续命中同一身份所需的独立证据批次数
+SPEAKER_IDENTIFY_MIN_SEC = 5.0      # 单个滑动识别窗口的有效语音（秒）
+SPEAKER_REALTIME_CONFIRMATIONS = 2  # 实时连续滑动窗口命中同一身份所需次数
 SPEAKER_ENROLL_MIN_SEC = 3.0        # 手动登记单样本最短有效语音（VAD 后，秒）
 SPEAKER_AUTO_ENROLL = False         # 默认禁止把未知说话人自动写入生物识别库
 SPEAKER_AUTO_ENROLL_MIN_SEC = 10.0  # 自动登记的簇最短语音总时长（严于手动登记）

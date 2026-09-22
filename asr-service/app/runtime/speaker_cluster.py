@@ -1,13 +1,11 @@
 """说话人聚类（在线增量 + 离线全局）。
 
 在线：质心 + 余弦阈值增量归簇（实时转写会话级，无回溯不改历史标签）。
-离线：AHC（<40 窗）/ 谱聚类（≥40 窗）+ 小簇并入 + 近簇合并。
+离线：AHC（<40 窗）/ 谱聚类（≥40 窗）+ 小簇复核 + 近簇合并。
      聚类策略改写自 3D-Speaker speakerlab/process/cluster.py（Apache 2.0）：
      AHC 用 scipy linkage 替代 fastcluster；谱聚类保留未归一化拉普拉斯 + eigen-gap 定簇数。
 
-阈值依据 S0 spike 实测（scripts/spike_speaker_diarization.py）：
-- 离线 AHC 合并阈 = 余弦相似度 ≥ 0.40（上游 fix_cos_thr 真实语义；scipy 距离切点 = 0.60）
-- 在线 τ 默认 0.50（实测可用区间 [0.35, 0.65]）
+聚类阈值沿用现有默认值，切换 ReDimNet2 后需结合真实数据重新标定。
 
 所有输入 embedding 均假定 L2 归一化（SpeakerEmbeddingEngine 出口保证），余弦 = 点积。
 scipy / scikit-learn 仅在离线聚类函数内延迟导入：依赖缺失只影响说话人分离，不拖垮主链路。
@@ -19,13 +17,14 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# ─── 离线聚类参数（3D-Speaker CommonClustering/SpectralCluster 生产默认，spike 复核） ───
+# ─── 离线聚类参数 ───
 
 AHC_SIM_THR = 0.40        # AHC 合并阈：平均余弦相似度 ≥ 此值并簇
 CLUSTER_LINE = 40         # 窗数 < 此值走 AHC，否则谱聚类
 SPECTRAL_PVAL = 0.012     # 谱聚类 p-pruning 保留比例
 SPECTRAL_MIN_PNUM = 6     # p-pruning 每行至少保留的邻居数
-MIN_CLUSTER_SIZE = 4      # 簇大小 ≤ 此值视为小簇并入最近大簇
+MIN_CLUSTER_SIZE = 4      # 簇大小 ≤ 此值进入小簇相似度复核
+MINOR_MERGE_COS = 0.80    # 小簇仅在与大簇高度相似时合并，避免吞掉短时真实说话人
 MER_COS = 0.8             # 簇质心相似度 > 此值时合并
 MAX_NUM_SPKS = 15         # 谱聚类簇数搜索上界的硬上限
 
@@ -56,19 +55,29 @@ class OnlineSpeakerClusterer:
         self._min_seg_ms = min_seg_ms
         self._centroids: list[np.ndarray] = []   # 每说话人运行质心（L2 归一）
         self._durations_ms: list[int] = []
-        self._identity_segments: list[list[tuple[np.ndarray, int]]] = []
+        self._identity_audio: list[np.ndarray] = []
 
     def _add_identity_evidence(
         self,
         index: int,
-        emb: np.ndarray,
-        dur_ms: int,
+        audio: np.ndarray | None,
     ) -> None:
-        self._identity_segments[index].append(
-            (np.asarray(emb, dtype=np.float32).copy(), dur_ms)
+        if audio is None:
+            return
+        chunk = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if chunk.size == 0:
+            return
+        self._identity_audio[index] = np.concatenate(
+            (self._identity_audio[index], chunk)
         )
 
-    def assign(self, emb: np.ndarray, dur_ms: int) -> str | None:
+    def assign(
+        self,
+        emb: np.ndarray,
+        dur_ms: int,
+        *,
+        identity_audio: np.ndarray | None = None,
+    ) -> str | None:
         """归簇一个段级 embedding（L2 归一 [192]），返回 A/B/C… 或 None（无法判定）。"""
         dur_ms = max(int(dur_ms), 0)
         sims = [float(c @ emb) for c in self._centroids]
@@ -78,6 +87,7 @@ class OnlineSpeakerClusterer:
         if dur_ms < self._min_seg_ms:
             # 短段 embedding 不可靠（spike EXP7）：只挂靠，不建簇不更新质心
             if best >= self._thr:
+                self._add_identity_evidence(idx, identity_audio)
                 return speaker_label(idx)
             return None
         if best >= self._thr:
@@ -85,16 +95,18 @@ class OnlineSpeakerClusterer:
             merged = self._centroids[idx] * previous_ms + emb * dur_ms
             self._centroids[idx] = merged / np.linalg.norm(merged)
             self._durations_ms[idx] += dur_ms
-            self._add_identity_evidence(idx, emb, dur_ms)
+            self._add_identity_evidence(idx, identity_audio)
             return speaker_label(idx)
         if len(self._centroids) >= self._max:
             # 低置信度且已达上限：保持匿名，避免强塞最近簇污染身份结果。
             return None
         self._centroids.append(np.asarray(emb, dtype=np.float32).copy())
         self._durations_ms.append(dur_ms)
-        self._identity_segments.append([
-            (np.asarray(emb, dtype=np.float32).copy(), dur_ms)
-        ])
+        self._identity_audio.append(np.zeros(0, dtype=np.float32))
+        self._add_identity_evidence(
+            len(self._centroids) - 1,
+            identity_audio,
+        )
         return speaker_label(len(self._centroids) - 1)
 
     @property
@@ -115,35 +127,29 @@ class OnlineSpeakerClusterer:
             return self._durations_ms[idx] / 1000.0
         return 0.0
 
-    def take_identity_evidence(
+    def take_identity_audio(
         self,
         label: str,
         min_duration_sec: float,
-    ) -> tuple[np.ndarray, float] | None:
-        """消费一批未查询证据；不足门槛时保留并返回 None。"""
+        sample_rate: int = 16000,
+    ) -> np.ndarray | None:
+        """取最近一段身份语音，并保留重叠部分供下一滑窗复用。"""
         idx = _label_index(label)
-        if not 0 <= idx < len(self._identity_segments):
+        if not 0 <= idx < len(self._identity_audio):
             return None
-
-        selected = []
-        duration_ms = 0
-        min_duration_ms = min_duration_sec * 1000
-        for embedding, segment_duration_ms in self._identity_segments[idx]:
-            selected.append((embedding, segment_duration_ms))
-            duration_ms += segment_duration_ms
-            if duration_ms >= min_duration_ms:
-                break
-        if duration_ms < min_duration_ms:
+        required_samples = int(min_duration_sec * sample_rate)
+        audio = self._identity_audio[idx]
+        if audio.size < required_samples:
             return None
-        vector = sum(
-            embedding * segment_duration_ms
-            for embedding, segment_duration_ms in selected
+        clip = np.ascontiguousarray(audio[-required_samples:])
+        step_samples = int(min_duration_sec * sample_rate / 2)
+        retained_samples = max(required_samples - step_samples, 0)
+        self._identity_audio[idx] = (
+            clip[-retained_samples:].copy()
+            if retained_samples
+            else np.zeros(0, dtype=np.float32)
         )
-        del self._identity_segments[idx][:len(selected)]
-        norm = float(np.linalg.norm(vector))
-        if norm <= 0:
-            return None
-        return vector / norm, duration_ms / 1000.0
+        return clip
 
 
 # ─── 离线全局聚类 ───
@@ -212,8 +218,9 @@ def _spectral(embs: np.ndarray, max_spks: int,
 
 
 def _filter_minor_clusters(labels: np.ndarray, embs: np.ndarray,
-                           min_cluster_size: int = MIN_CLUSTER_SIZE) -> np.ndarray:
-    """小簇（≤ min_cluster_size 窗）并入最近大簇。
+                           min_cluster_size: int = MIN_CLUSTER_SIZE,
+                           merge_cos: float = MINOR_MERGE_COS) -> np.ndarray:
+    """仅把与大簇高度相似的小簇整体并入，保留短时真实说话人。
 
     偏离上游：全员皆小簇（短音频，如 <8s 双人对话）时上游坍缩为单簇
     （np.zeros_like），此处改为保持原标签——过滤的本意是抑噪，无主簇时不应抹平真簇。
@@ -223,9 +230,15 @@ def _filter_minor_clusters(labels: np.ndarray, embs: np.ndarray,
     major = uniq[counts > min_cluster_size]
     if len(major) == len(uniq) or len(major) == 0:
         return labels
-    centers = np.stack([embs[labels == c].mean(axis=0) for c in major])
-    for i in np.where(~np.isin(labels, major))[0]:
-        labels[i] = major[int(np.argmax(centers @ embs[i]))]
+    centers = np.stack([embs[labels == cluster].mean(axis=0) for cluster in major])
+    centers /= np.linalg.norm(centers, axis=1, keepdims=True)
+    for minor in uniq[counts <= min_cluster_size]:
+        center = embs[labels == minor].mean(axis=0)
+        center /= np.linalg.norm(center)
+        similarities = centers @ center
+        nearest = int(np.argmax(similarities))
+        if similarities[nearest] >= merge_cos:
+            labels[labels == minor] = major[nearest]
     return labels
 
 
@@ -265,10 +278,18 @@ class DiarizationResult:
     """
 
     def __init__(self, windows: list[tuple[float, float]],
-                 labels: np.ndarray, embeddings: np.ndarray):
+                 labels: np.ndarray, embeddings: np.ndarray,
+                 *, waveform: np.ndarray | None = None,
+                 sample_rate: int = 16000):
         self._windows = list(windows)
         self._labels = np.asarray(labels, dtype=int)
         self._embs = np.asarray(embeddings)
+        self._waveform = (
+            None
+            if waveform is None
+            else np.asarray(waveform, dtype=np.float32).reshape(-1)
+        )
+        self._sample_rate = int(sample_rate)
 
     def label_for(self, start: float, end: float) -> str | None:
         """段 [start,end]（秒）与各窗的重叠时长加权投票；无重叠窗 → None。"""
@@ -290,54 +311,94 @@ class DiarizationResult:
 
     @property
     def clusters(self) -> list[dict]:
-        """返回每簇质心、语音总时长和不重叠的身份识别证据。
+        """返回每簇质心、语音总时长和身份识别音频索引。
 
-        dur_sec 为簇内窗时间区间的并集长度（滑窗重叠不重复计），
-        是声纹库自动登记质量门槛（≥ speaker_auto_enroll_min_sec）的依据。
+        dur_sec 为簇内窗时间区间的并集长度（滑窗重叠不重复计）；
+        identity_duration_sec 是实际分配的身份识别语音时长。
         """
         out = []
         n_clusters = int(self._labels.max()) + 1 if len(self._labels) else 0
+        if n_clusters == 0:
+            return out
+        identity_intervals = (
+            self._identity_intervals_by_cluster(n_clusters)
+            if self._waveform is not None
+            else None
+        )
         for i in range(n_clusters):
             idx = np.where(self._labels == i)[0]
             centroid = self._embs[idx].mean(axis=0)
             norm = float(np.linalg.norm(centroid))
             if norm > 0:
                 centroid = centroid / norm
-            out.append({
+            cluster = {
                 "label": speaker_label(i),
                 "centroid": centroid,
                 "dur_sec": _union_duration([self._windows[j] for j in idx]),
-                "evidence": self._non_overlapping_evidence(idx),
-            })
+            }
+            if identity_intervals is not None:
+                intervals = identity_intervals[i]
+                cluster["identity_waveform"] = self._waveform
+                cluster["identity_sample_rate"] = self._sample_rate
+                cluster["identity_intervals"] = intervals
+                identity_samples = sum(
+                    max(
+                        round((end - start) * self._sample_rate),
+                        0,
+                    )
+                    for start, end in intervals
+                )
+                cluster["identity_duration_sec"] = (
+                    identity_samples / self._sample_rate
+                )
+            out.append(cluster)
         return out
 
-    def _non_overlapping_evidence(self, indices: np.ndarray) -> list[dict]:
-        """按新增覆盖时长返回窗向量，重叠区域不重复计入身份识别时长。"""
-        evidence = []
+    def _identity_intervals_by_cluster(
+        self,
+        n_clusters: int,
+    ) -> list[list[tuple[float, float]]]:
+        """把重叠窗口的新增覆盖区间唯一分配给对应簇。"""
+        if self._waveform is None:
+            raise RuntimeError("离线身份识别缺少原始音频")
+        intervals: list[list[tuple[float, float]]] = [
+            [] for _ in range(n_clusters)
+        ]
         covered_until = float("-inf")
-        for index in indices:
-            start, end = self._windows[int(index)]
+        for (start, end), label in zip(
+            self._windows,
+            self._labels,
+            strict=True,
+        ):
             new_duration = end - max(start, covered_until)
+            slice_start = max(start, covered_until)
             covered_until = max(covered_until, end)
             if new_duration <= 0:
                 continue
-            evidence.append({
-                "embedding": self._embs[int(index)],
-                "dur_sec": new_duration,
-            })
-        return evidence
+            start_sample = max(int(slice_start * self._sample_rate), 0)
+            end_sample = min(
+                int(end * self._sample_rate),
+                self._waveform.size,
+            )
+            if end_sample > start_sample:
+                label_index = int(label)
+                intervals[label_index].append((
+                    start_sample / self._sample_rate,
+                    end_sample / self._sample_rate,
+                ))
+        return intervals
 
 
 def _union_duration(intervals: list[tuple[float, float]]) -> float:
-    """区间并集总长（秒）。"""
-    total, cur_st, cur_ed = 0.0, None, None
-    for st, ed in sorted(intervals):
-        if cur_ed is None or st > cur_ed:
-            if cur_ed is not None:
-                total += cur_ed - cur_st
-            cur_st, cur_ed = st, ed
+    """Return the union duration of sorted or unsorted time intervals."""
+    total, current_start, current_end = 0.0, None, None
+    for start, end in sorted(intervals):
+        if current_end is None or start > current_end:
+            if current_end is not None:
+                total += current_end - current_start
+            current_start, current_end = start, end
         else:
-            cur_ed = max(cur_ed, ed)
-    if cur_ed is not None:
-        total += cur_ed - cur_st
+            current_end = max(current_end, end)
+    if current_end is not None:
+        total += current_end - current_start
     return total

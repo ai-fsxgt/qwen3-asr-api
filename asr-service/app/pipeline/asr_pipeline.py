@@ -8,6 +8,7 @@ from app.engines.vad_engine import VADEngine
 from app.engines.punc_engine import PuncEngine
 from app.pipeline.audio_preprocessor import convert_to_wav, get_audio_duration
 from app.pipeline.sentence_segmenter import segment_sentences
+from app.runtime.speaker_identity import apply_offline_identities
 from app.utils.result_parser import extract_text, extract_words
 from app.config import (
     UPLOADS_DIR,
@@ -217,15 +218,16 @@ class ASRPipeline:
                         diar.clusters, id_threshold=id_threshold, id_margin=id_margin,
                         cancelled=cancelled)
                     if not (cancelled and cancelled()):
-                        name_of = {m["label"]: m for m in mapping}
-                        for seg in segments:
-                            m = name_of.get(seg.get("speaker"))
-                            if m and m.get("name"):
-                                seg["speaker_name"] = m["name"]
-                        speakers_result = mapping
-                        named = sum(1 for m in mapping if m.get("name"))
+                        speakers_result = apply_offline_identities(
+                            segments,
+                            mapping,
+                        )
+                        named = sum(
+                            1 for segment in segments
+                            if segment.get("speaker_name")
+                        )
                         logger.info(
-                            f"[Pipeline] 声纹识别完成: {named}/{len(mapping)} 簇有名")
+                            f"[Pipeline] 声纹识别完成: {named}/{len(segments)} 段有名")
             if (speaker_active and progress_callback
                     and not (cancelled and cancelled())):
                 progress_callback(0.95)
@@ -530,7 +532,13 @@ class ASRPipeline:
         labels = cluster_offline(embeddings, max_speakers=cfg.SPEAKER_MAX)
         if cancelled and cancelled():
             raise InterruptedError("说话人处理已取消")
-        return DiarizationResult(windows, labels, embeddings)
+        return DiarizationResult(
+            windows,
+            labels,
+            embeddings,
+            waveform=wav,
+            sample_rate=_sr,
+        )
 
     def _merge_vad_segments(
         self,

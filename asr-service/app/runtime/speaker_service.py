@@ -18,7 +18,10 @@ import numpy as np
 import soundfile as sf
 
 import app.config as cfg
-from app.engines.speaker_embedding_engine import make_windows
+from app.engines.speaker_embedding_engine import (
+    make_identity_windows,
+    make_windows,
+)
 from app.pipeline.audio_preprocessor import convert_to_wav
 from app.runtime.speaker_cluster import cluster_offline
 from app.runtime.speaker_store import (
@@ -71,14 +74,32 @@ class SpeakerService:
                     f"{purpose}样本有效语音不足（{dur:.1f}s < {required_sec}s），"
                     "请提供更长的清晰人声"
                 )
-            wav, _sr = sf.read(wav_path, dtype="float32")
+            wav, sample_rate = sf.read(wav_path, dtype="float32")
             windows = [w for s, e in segments
                        for w in make_windows(s / 1000.0, e / 1000.0)]
             embs = self._engine.embed_windows(wav, windows)
             labels = cluster_offline(embs, max_speakers=cfg.SPEAKER_MAX)
             if len(np.unique(labels)) > 1:
                 raise ValueError(f"{purpose}样本含多个说话人，请提供单人清晰录音")
-            template = embs.mean(axis=0)
+            speech_chunks = [
+                wav[
+                    max(int(start_ms * sample_rate / 1000), 0):
+                    min(int(end_ms * sample_rate / 1000), len(wav))
+                ]
+                for start_ms, end_ms in segments
+            ]
+            speech = np.ascontiguousarray(np.concatenate(speech_chunks))
+            identity_windows = make_identity_windows(
+                0.0,
+                len(speech) / sample_rate,
+            )
+            if not identity_windows:
+                identity_windows = [(0.0, len(speech) / sample_rate)]
+            identity_embeddings = self._engine.embed_windows(
+                speech,
+                identity_windows,
+            )
+            template = identity_embeddings.mean(axis=0)
             norm = float(np.linalg.norm(template))
             if norm > 0:
                 template = template / norm
@@ -361,42 +382,6 @@ class SpeakerService:
         )
 
     @staticmethod
-    def _group_identity_evidence(
-        evidence: list[dict],
-        min_duration_sec: float,
-    ) -> list[tuple[np.ndarray, float]]:
-        """将不重叠窗合并为独立身份查询向量，每批至少包含指定语音时长。"""
-        groups: list[tuple[np.ndarray, float]] = []
-        weighted_sum = None
-        duration = 0.0
-        for sample in evidence:
-            sample_duration = float(sample["dur_sec"])
-            vector = np.asarray(sample["embedding"], dtype=np.float32)
-            contribution = vector * sample_duration
-            weighted_sum = (
-                contribution if weighted_sum is None
-                else weighted_sum + contribution
-            )
-            duration += sample_duration
-            if duration >= min_duration_sec:
-                groups.append((weighted_sum, duration))
-                weighted_sum = None
-                duration = 0.0
-        if weighted_sum is not None and groups:
-            previous_sum, previous_duration = groups[-1]
-            groups[-1] = (
-                previous_sum + weighted_sum,
-                previous_duration + duration,
-            )
-
-        normalized = []
-        for vector_sum, group_duration in groups:
-            norm = float(np.linalg.norm(vector_sum))
-            if norm > 0:
-                normalized.append((vector_sum / norm, group_duration))
-        return normalized
-
-    @staticmethod
     def _aggregate_identity_decisions(
         decisions: list[SpeakerIdentification],
         durations: list[float],
@@ -502,16 +487,79 @@ class SpeakerService:
         *,
         threshold: float,
         margin: float,
-    ) -> dict[str, tuple[SpeakerIdentification, dict]]:
-        prepared: list[tuple[str, list[tuple[np.ndarray, float]]]] = []
+        cancelled=None,
+    ) -> dict[
+        str,
+        tuple[SpeakerIdentification, dict, np.ndarray | None, list[dict]],
+    ]:
+        prepared = []
         vectors = []
         for cluster in clusters:
-            groups = self._group_identity_evidence(
-                cluster["evidence"],
-                cfg.SPEAKER_IDENTIFY_MIN_SEC,
+            if cancelled and cancelled():
+                raise InterruptedError("说话人处理已取消")
+            waveform = np.asarray(
+                cluster["identity_waveform"],
+                dtype=np.float32,
+            ).reshape(-1)
+            sample_rate = int(cluster["identity_sample_rate"])
+            source_intervals = cluster["identity_intervals"]
+            duration_sec = float(cluster["identity_duration_sec"])
+            groups = []
+            identity_centroid = None
+            if duration_sec >= cfg.SPEAKER_IDENTIFY_MIN_SEC:
+                windows = make_identity_windows(
+                    0.0,
+                    duration_sec,
+                    win=cfg.SPEAKER_IDENTIFY_MIN_SEC,
+                    step=cfg.SPEAKER_IDENTIFY_MIN_SEC / 2,
+                )
+                window_intervals = [
+                    self._source_intervals_for_window(
+                        source_intervals,
+                        start,
+                        end,
+                    )
+                    for start, end in windows
+                ]
+                embeddings = self._engine.embed_identity_clips(
+                    (
+                        self._audio_from_source_intervals(
+                            waveform,
+                            intervals,
+                            sample_rate,
+                        )
+                        for intervals in window_intervals
+                    ),
+                    cancelled=cancelled,
+                )
+                groups = [
+                    (
+                        embedding,
+                        end - start,
+                        intervals,
+                    )
+                    for embedding, (start, end), intervals in zip(
+                        embeddings,
+                        windows,
+                        window_intervals,
+                        strict=True,
+                    )
+                ]
+                identity_centroid = sum(
+                    vector * duration
+                    for vector, duration, _intervals in groups
+                )
+                norm = float(np.linalg.norm(identity_centroid))
+                if norm > 0:
+                    identity_centroid = identity_centroid / norm
+            prepared.append((
+                cluster.get("label", "?"),
+                groups,
+                identity_centroid,
+            ))
+            vectors.extend(
+                vector for vector, _duration, _intervals in groups
             )
-            prepared.append((cluster.get("label", "?"), groups))
-            vectors.extend(vector for vector, _duration in groups)
 
         decisions = self.store.identify_many_detailed(
             vectors,
@@ -520,16 +568,90 @@ class SpeakerService:
         ) if vectors else []
         results = {}
         offset = 0
-        for label, groups in prepared:
+        for label, groups, identity_centroid in prepared:
             count = len(groups)
             group_decisions = decisions[offset:offset + count]
-            durations = [duration for _vector, duration in groups]
-            results[label] = self._aggregate_identity_decisions(
+            durations = [
+                duration for _vector, duration, _intervals in groups
+            ]
+            decision, detail = self._aggregate_identity_decisions(
                 group_decisions,
                 durations,
             )
+            anchors = []
+            for index, (
+                group_decision,
+                (_vector, _duration, intervals),
+            ) in enumerate(zip(group_decisions, groups, strict=True)):
+                if not group_decision.matched:
+                    continue
+                adjacent_decisions = group_decisions[
+                    max(0, index - 1):index
+                ] + group_decisions[index + 1:index + 2]
+                if not any(
+                    adjacent.matched
+                    and adjacent.speaker_id == group_decision.speaker_id
+                    for adjacent in adjacent_decisions
+                ):
+                    continue
+                anchors.append({
+                    "speaker_id": group_decision.speaker_id,
+                    "name": group_decision.name,
+                    "score": group_decision.top1_score,
+                    "intervals": intervals,
+                })
+            results[label] = (
+                decision,
+                detail,
+                identity_centroid,
+                anchors,
+            )
             offset += count
         return results
+
+    @staticmethod
+    def _audio_from_source_intervals(
+        waveform: np.ndarray,
+        intervals: list[tuple[float, float]],
+        sample_rate: int,
+    ) -> np.ndarray:
+        """从原始波形按时间区间组装单个身份识别窗口。"""
+        chunks = [
+            waveform[
+                max(round(start * sample_rate), 0):
+                min(round(end * sample_rate), waveform.size)
+            ]
+            for start, end in intervals
+        ]
+        chunks = [chunk for chunk in chunks if chunk.size]
+        if not chunks:
+            return np.zeros(0, dtype=np.float32)
+        if len(chunks) == 1:
+            return chunks[0]
+        return np.concatenate(chunks)
+
+    @staticmethod
+    def _source_intervals_for_window(
+        source_intervals: list[tuple[float, float]],
+        window_start: float,
+        window_end: float,
+    ) -> list[tuple[float, float]]:
+        """Map a window on concatenated speech back to original timeline."""
+        mapped = []
+        cursor = 0.0
+        for source_start, source_end in source_intervals:
+            duration = source_end - source_start
+            overlap_start = max(window_start, cursor)
+            overlap_end = min(window_end, cursor + duration)
+            if overlap_end > overlap_start:
+                mapped.append((
+                    source_start + overlap_start - cursor,
+                    source_start + overlap_end - cursor,
+                ))
+            cursor += duration
+            if cursor >= window_end:
+                break
+        return mapped
 
     def _identify_cluster(
         self,
@@ -669,7 +791,8 @@ class SpeakerService:
                                 cancelled=None) -> list[dict]:
         """离线联动入口（识别 + 自动登记）。
 
-        clusters = [{"label","centroid","dur_sec","evidence"}]。未命中且开启
+        clusters = [{"label","centroid","dur_sec","identity_waveform",
+                     "identity_intervals"}]。未命中且开启
         speaker_auto_enroll 且簇语音总时长过门槛 → 以「说话人_NN」占位名登记
         （source='auto'；开启自动登记 = 部署方声明已获数据主体同意，consent 同责）。
         已命中的说话人不自动追加模板（防投毒）。登记失败退回匿名，不影响转写。
@@ -686,7 +809,10 @@ class SpeakerService:
                 clusters,
                 threshold=thr,
                 margin=mgn,
+                cancelled=cancelled,
             )
+        except InterruptedError:
+            return []
         except Exception as e:
             logger.warning(f"离线声纹批量识别失败，退回匿名: {e}")
             return [self._anon(cluster.get("label", "?")) for cluster in clusters]
@@ -701,8 +827,13 @@ class SpeakerService:
                 with self._speaker_data_lock:
                     if cancelled and cancelled():
                         break
-                    dur = float(c.get("dur_sec") or 0.0)
-                    decision, detail = evidence_results[label]
+                    dur = float(c.get("identity_duration_sec") or 0.0)
+                    (
+                        decision,
+                        detail,
+                        identity_centroid,
+                        identity_anchors,
+                    ) = evidence_results[label]
                     self._audit_identification(
                         decision,
                         via="offline",
@@ -715,6 +846,7 @@ class SpeakerService:
                     hit = decision.as_match()
                     if (
                         cfg.SPEAKER_AUTO_ENROLL
+                        and identity_centroid is not None
                         and dur >= cfg.SPEAKER_IDENTIFY_MIN_SEC
                         and dur >= cfg.SPEAKER_AUTO_ENROLL_MIN_SEC
                     ):
@@ -729,8 +861,13 @@ class SpeakerService:
                         ):
                             mapping = self._anon(label)
                         else:
+                            enroll_cluster = {
+                                **c,
+                                "centroid": identity_centroid,
+                                "dur_sec": dur,
+                            }
                             mapping = self._identify_or_enroll_cluster(
-                                c,
+                                enroll_cluster,
                                 threshold=thr,
                                 margin=mgn,
                                 cancelled=cancelled,
@@ -744,6 +881,7 @@ class SpeakerService:
                             mapping = {"label": label, **hit}
                         else:
                             mapping = self._anon(label)
+                    mapping["_identity_anchors"] = identity_anchors
                 out.append(mapping)
             except Exception as e:
                 logger.warning(f"簇识别/自动登记失败，退回匿名: {e}")

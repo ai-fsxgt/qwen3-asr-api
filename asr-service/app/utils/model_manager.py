@@ -1,8 +1,31 @@
-import os
+import hashlib
 import logging
+import os
+
 from app.config import MODEL_SOURCE
 
 logger = logging.getLogger(__name__)
+
+
+def require_model_file(
+    target_path: str,
+    *,
+    sha256: str,
+) -> None:
+    """Require one immutable model file and verify its checksum."""
+    if not os.path.isfile(target_path):
+        raise FileNotFoundError(f"模型文件不存在: {target_path}")
+    if _file_sha256(target_path) != sha256:
+        raise RuntimeError(f"模型文件校验失败: {target_path}")
+    logger.info(f"模型文件校验通过: {target_path}")
+
+
+def _file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as model_file:
+        for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def ensure_model(repo_id: str, local_dir: str):

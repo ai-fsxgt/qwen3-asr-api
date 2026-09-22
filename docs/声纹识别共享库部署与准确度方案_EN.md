@@ -69,11 +69,12 @@ password in `config.yaml`.
 
 - Manual enrollment accepts one template and recommends at least three without
   making them mandatory.
-- Real-time identification accumulates speech that has not been used by a previous
-  lookup and queries the database for each independent batch of at least 5 seconds.
-- A real-time name is exposed after two independent batches match the same identity,
-  so the default earliest confirmation requires about 10 seconds of effective speech.
-- Each real-time evidence vector is weighted by segment speech duration; the running
+- Real-time identification queries the database with 5-second sliding speech windows
+  that overlap by 50% by default.
+- A real-time name is exposed after two consecutive windows match the same identity,
+  so continuous speech can theoretically be confirmed after about 7.5 seconds; actual
+  timing depends on sentence boundaries.
+- Each real-time window is embedded again from raw PCM with ReDimNet2; the running
   cluster centroid is not reused for identity lookups.
 - Low-confidence segments remain anonymous after the maximum speaker count is reached.
 - Offline clusters shorter than 5 seconds remain anonymous.

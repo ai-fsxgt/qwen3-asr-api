@@ -381,14 +381,25 @@ class StreamSession:
                 text = await self._in_thread(self._punc.restore, text)
             except Exception as e:
                 logger.warning(f"标点恢复失败，使用原始文本: {e}")
-        # 说话人判定：CPU 任务，在 _asr_sem 之外、线程池内执行（体例同标点）
+        # 说话人判定在 _asr_sem 之外的线程池执行；GPU 路径由引擎共享锁串行。
         spk = None
         spk_name = None
         segment_duration_ms = int(end_ms - start_ms)
         if self._spk_cluster is not None:
             try:
-                emb = await self._in_thread(self._speaker.embed_segment, seg)
-                spk = self._spk_cluster.assign(emb, segment_duration_ms)
+                emb = await self._in_thread(
+                    self._speaker.embed_realtime_segment,
+                    seg,
+                )
+                spk = self._spk_cluster.assign(
+                    emb,
+                    segment_duration_ms,
+                    identity_audio=(
+                        seg
+                        if self._identify and self._speaker_service is not None
+                        else None
+                    ),
+                )
             except Exception as e:
                 logger.warning(f"说话人判定失败，本段不标注: {e}")
             # 声纹识别（可选）：用包含本段的新语音证据查库，不回改历史。
@@ -425,13 +436,15 @@ class StreamSession:
         cluster = self._spk_cluster      # 本地引用：release() 并发置 None 防护
         if cluster is None:
             return None
-        evidence = cluster.take_identity_evidence(
+        identity_audio = cluster.take_identity_audio(
             spk,
             cfg.SPEAKER_IDENTIFY_MIN_SEC,
+            _TARGET_SR,
         )
-        if evidence is None:
+        if identity_audio is None:
             return self._spk_identity_tracker.confirmed_name(spk)
-        embedding, duration_sec = evidence
+        embedding = self._speaker.embed_realtime_identity_segment(identity_audio)
+        duration_sec = len(identity_audio) / _TARGET_SR
         mapping = self._speaker_service.map_clusters(
             [{"label": spk, "centroid": embedding, "dur_sec": duration_sec}],
             id_threshold=self._spk_id_threshold, id_margin=self._spk_id_margin)

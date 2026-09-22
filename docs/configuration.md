@@ -121,8 +121,8 @@ volumes:
 
 | 参数 | 取值 | 默认值 | 说明 |
 |------|------|--------|------|
-| `--enable-speaker` / `--no-speaker` | - | 关闭 | 说话人分离：离线 `segments[].speaker` / 实时 `final.speaker`（匿名 A/B/C…）；CAM++ 模型 28MB 首次自动下载，CPU 推理不占显存 |
-| `--speaker-threshold` | 0–1 | `0.5` | 实时在线归簇余弦阈值（推荐区间 0.35–0.65；调高更易分人、调低更易并人） |
+| `--enable-speaker` / `--no-speaker` | - | 关闭 | 说话人分离：离线 `segments[].speaker` / 实时 `final.speaker`（匿名 A/B/C…）；ReDimNet2-B6 权重需手动放入 `models/speaker/redimnet2-b6/`，standard 跟随服务设备，vLLM 使用 GPU |
+| `--speaker-threshold` | 0–1 | `0.5` | 实时在线归簇余弦阈值；调高更易分人、调低更易并人，换模型后需用实际数据重新标定 |
 | `--speaker-max` | 数字 | `8` | 说话人数上限（实时硬上限；离线谱聚类簇数搜索上界） |
 | `--speaker-min-seg-ms` | 毫秒 | `1500` | 实时短段门槛：短于此的段不建新簇/不更新质心（声纹特征在 ≥1.5s 才稳定） |
 | `--speaker-max-windows` | 数字 | `4000` | 离线滑窗数上限，超出均匀抽稀（超长音频聚类内存防护） |
@@ -135,8 +135,8 @@ volumes:
 | `--speaker-database-url` | PostgreSQL URL | 空 | 共享 PostgreSQL/pgvector 连接地址；生产推荐通过 `SPEAKER_DATABASE_URL` 环境变量传入 |
 | `--speaker-id-threshold` | 0–1 | `0.45` | 1:N 开集识别阈，最高相似度低于此判 unknown |
 | `--speaker-id-margin` | 0–1 | `0.10` | top1-top2 margin，差距小于此判 unknown（近邻打架宁缺勿错） |
-| `--speaker-identify-min-sec` | 秒 | `5.0` | 每个独立证据批次查询声纹库前需累计的最短有效语音时长 |
-| `--speaker-realtime-confirmations` | 数字 | `2` | 连续独立证据批次命中相同身份达到该次数后才展示姓名 |
+| `--speaker-identify-min-sec` | 秒 | `5.0` | 每个滑动识别窗口所需的有效语音时长；相邻窗口默认 50% 重叠 |
+| `--speaker-realtime-confirmations` | 数字 | `2` | 连续滑动窗口命中相同身份达到该次数后才展示姓名 |
 | `--speaker-enroll-min-sec` | 秒 | `3.0` | 手动登记单样本最短有效语音（VAD 后） |
 | `--speaker-auto-enroll` / `--no-speaker-auto-enroll` | - | 关闭 | 离线识别未命中的说话人自动以「说话人_NN」登记（**开启 = 部署方声明已获数据主体同意**） |
 | `--speaker-auto-enroll-min-sec` | 秒 | `10.0` | 自动登记的簇最短语音总时长（严于手动登记，降低噪声建档） |
@@ -277,7 +277,7 @@ export SPEAKER_DATABASE_URL='postgresql://qwen3_asr:强密码@数据库IP:5432/q
 - **声纹库降级矩阵**：以下任一条件不满足时模块自动降级关闭（ERROR 日志 + `/v2/speakers*` 返回 503，服务正常启动）：① `enable_speaker` 开启且引擎加载成功；② `api_key` 非空；③ 建库成功。库内模板与当前引擎 `model_tag` 不一致时仅禁用登记/认领/识别，查看与删除保留（被遗忘权）。
 - **共享与留存**：所有实例直接查询同一 PostgreSQL/pgvector，不维护进程内全量缓存；声纹数据无 TTL，唯一删除途径为 `DELETE /v2/speakers/{id}`。数据库与数据卷应纳入常规备份。
 - **自动登记**：默认关闭。显式开启 `speaker_auto_enroll` 后，离线转写中未命中且语音足量（默认 ≥10s）的说话人才会登记为「说话人_NN」；实时路径不自动登记，已命中说话人也不会自动追加模板。补充样本使用 `POST /v2/speakers/{id}/templates`。
-- **准确度保护**：实时按簇消费互不重叠的证据批次，每批默认至少包含 5 秒有效语音；连续两个独立批次命中同一身份后才展示姓名，默认最早约需 10 秒有效语音；top1 低于阈值或 top1-top2 margin 不足时保持匿名。
+- **准确度保护**：实时按簇使用默认 5 秒、50% 重叠的滑动语音窗口查库；连续两个窗口命中同一身份后才展示姓名，连续语音下理论最早约 7.5 秒（实际受断句边界影响）；top1 低于阈值或 top1-top2 margin 不足时保持匿名。
 - **合规**：登记接口强制 `consent=true`；开启自动登记即部署方声明已获数据主体同意；默认不留存音频；审计记录持久化在 PostgreSQL 中。
 
 ## vLLM 原生流式模式
@@ -291,7 +291,7 @@ export SPEAKER_DATABASE_URL='postgresql://qwen3_asr:强密码@数据库IP:5432/q
 | 接口 | 离线 v1/v2 + 实时 WS（`--enable-stream`） | **离线 v1/v2 + 实时 WS `/v2/asr/stream`（恒开）** + `/health` `/capabilities` |
 | 增量结果（实时） | 无（按段 final） | **有 partial→final** |
 | 词级时间戳 | 支持 | **离线支持**（ForcedAligner，默认开）；实时不支持 |
-| 说话人分离/识别 | 支持 | **离线 + 实时 final 支持**（CAM++，需 `--enable-speaker`；能量检测分段）；partial 不带说话人 |
+| 说话人分离/识别 | 支持 | **离线 + 实时 final 支持**（ReDimNet2-B6，需 `--enable-speaker`；能量检测分段）；partial 不带说话人 |
 | 标点 | CT-Transformer（可关） | 模型原生（**不可单独关**） |
 | 离线分段边界 | FSMN-VAD | 标点优先 / 整文兜底（边界较粗） |
 | 设备 | GPU / CPU | **仅 CUDA GPU**（直接禁用 CPU，无 CPU 容器） |
@@ -306,7 +306,7 @@ export SPEAKER_DATABASE_URL='postgresql://qwen3_asr:强密码@数据库IP:5432/q
 - **词级时间戳**：`--vllm-enable-align`（默认开）经 ForcedAligner 产出，与 standard 同款；`--no-vllm-align` 可关以省显存。
   - ⚠️ **长音频对齐 OOM**：对齐器是主进程内的独立 transformers 模型，其显存**不计入 `gpu_memory_utilization`**（该参数只约束 vLLM EngineCore 子进程）。`transcribe` 内部按 ≤180s 切块，但默认（`max_inference_batch_size=-1`）会把一个文件的**全部块一次性**喂对齐器前向——长音频（如 30 分钟≈10 块）激活叠加即 `CUDA out of memory`（短音频只 1 块、不受影响）。对策（按推荐序）：① **`--vllm-infer-batch-size`**（默认已改为 `4`）逐批对齐，峰值显存随批大小线性下降，仍在 GPU、最快；长音频仍 OOM 则降到 `1`；② `--vllm-align-device cpu` 把对齐器移到 CPU（无 GPU 争用，稳但慢）；③ 降 `--gpu-memory-utilization` 留更多 GPU 余量；④ `--no-vllm-align` 放弃词级时间戳。
 - **长音频与进度**：离线对超过 `vllm_offline_chunk_sec`（默认 180s）的音频按静音边界**逐块转写**，转写进度（0.1→0.85）随块实时更新、并可在块间响应取消（短音频整段直转）。块由 qwen_asr 同款切法产生、拼接=原音频；调小 `vllm_offline_chunk_sec` 可让进度更细、实时等待更短、峰值显存更省，但会降低离线吞吐。
-- **说话人分离/识别**：`--enable-speaker`（+ 声纹库 `--enable-speaker-db`）后，离线 `segments[].speaker` / `speaker_name` / `speakers` 字段与 standard 一致；实时在句级 `final` 输出 `speaker`，声纹命中时输出 `speaker_name`，`partial` 不带说话人且历史消息不回改。引擎为 CAM++（CPU、torch，非 funasr），离线滑窗语音区间和实时断句都用能量检测替代 FSMN-VAD（边界较粗）。未开启时请求 `diarize`/`identify_speakers` 记入 `warnings`。需额外依赖 `scipy`/`scikit-learn`/`modelscope`（或预挂 CAM++ 模型目录），见 [requirements-vllm.txt](../asr-service/requirements-vllm.txt)。
+- **说话人分离/识别**：`--enable-speaker`（+ 声纹库 `--enable-speaker-db`）后，离线 `segments[].speaker` / `speaker_name` / `speakers` 字段与 standard 一致；实时在句级 `final` 输出 `speaker`，声纹命中时输出 `speaker_name`，`partial` 不带说话人且历史消息不回改。引擎为 ReDimNet2-B6（GPU、torch），离线滑窗语音区间和实时断句都用能量检测替代 FSMN-VAD（边界较粗）。未开启时请求 `diarize`/`identify_speakers` 记入 `warnings`。权重文件 `b6-vb2+vox2+cnc2_v0-lm.pt` 必须由部署方放入 `models/speaker/redimnet2-b6/`，运行时只校验完整性、不自动下载；聚类依赖 `scipy`/`scikit-learn`，见 [requirements-vllm.txt](../asr-service/requirements-vllm.txt)。
 > 需要 FSMN 精分段或 CT-Transformer 独立标点控制时，请用 `standard` 模式。
 
 **兼容接口（`/compat/*`）**：vllm 模式同样支持 OpenAI / DashScope 兼容接口，开关与 standard 一致（`--enable-openai-api` / `--enable-dashscope-api`）；接口文档见 [开发文档](development.md)。与 standard 的差异：

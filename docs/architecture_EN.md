@@ -49,7 +49,7 @@ asr-service/
 │       ├── config_file.py         # config.yaml discovery/bootstrap/validation/merge
 │       ├── model_manager.py       # Model download management
 │       └── openvino_model_downloader.py  # OpenVINO model download
-├── models/                        # Model storage (auto-downloaded, not committed)
+├── models/                        # Models (ReDimNet2 prepared manually; others on demand; not committed)
 ├── data/                          # Task persistence database (tasks.db, not committed)
 ├── cache/                         # Runtime cache (uploads, audio segments)
 ├── logs/                          # Log files

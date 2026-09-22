@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import threading
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.gzip import GZipMiddleware
@@ -337,6 +338,7 @@ def _assemble_standard(app: FastAPI, args) -> None:
 
     # 加载引擎
     device_map = "cuda:0" if device == "cuda" else "cpu"
+    gpu_inference_lock = threading.Lock() if device == "cuda" else None
 
     # VAD 引擎（必须）
     vad_engine = VADEngine()
@@ -356,6 +358,7 @@ def _assemble_standard(app: FastAPI, args) -> None:
             model_size=model_size,
             device=device_map,
             enable_align=enable_align,
+            inference_lock=gpu_inference_lock,
         )
         asr_backend = "qwen_asr"
     try:
@@ -378,11 +381,18 @@ def _assemble_standard(app: FastAPI, args) -> None:
             punc_engine = None
             enable_punc = False
 
+    stream_enabled = getattr(args, "enable_stream", False)
+    realtime_priority_gate = RealtimePriorityGate(enabled=stream_enabled)
+
     # 说话人分离引擎（可选）：加载失败降级关闭，不影响转写主链路（容错对齐标点）
     speaker_engine = None
     if cfg.ENABLE_SPEAKER:
         from app.engines.speaker_embedding_engine import SpeakerEmbeddingEngine
-        speaker_engine = SpeakerEmbeddingEngine()
+        speaker_engine = SpeakerEmbeddingEngine(
+            device=device,
+            priority_gate=realtime_priority_gate if stream_enabled else None,
+            inference_lock=gpu_inference_lock,
+        )
         try:
             speaker_engine.load()
         except Exception as e:
@@ -425,8 +435,6 @@ def _assemble_standard(app: FastAPI, args) -> None:
     speaker_db_enabled = speaker_service is not None and not speaker_tag_mismatch
     # 转写联动仅在识别可用时注入（失配 = 库内模板与当前引擎不可比，联动同样禁用）
     linked_speaker_service = speaker_service if speaker_db_enabled else None
-    stream_enabled = getattr(args, "enable_stream", False)
-    realtime_priority_gate = RealtimePriorityGate(enabled=stream_enabled)
 
     # 任务持久化（可选）：建库失败只告警不中断启动（附属能力不拖垮主链路）
     task_store = None
@@ -694,6 +702,7 @@ def _assemble_vllm(app: FastAPI, args) -> None:
     from app.runtime.vllm_stream_session import VllmStreamBackend
     from app.api.ws_routes import ws_router_stream, init_ws_stream
 
+    gpu_inference_lock = threading.Lock()
     engine = VLLMASREngine(
         model_size=model_size,
         gpu_memory_utilization=cfg.VLLM_GPU_MEMORY_UTILIZATION,
@@ -705,6 +714,7 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         enable_align=cfg.VLLM_ENABLE_ALIGN,
         align_device=cfg.VLLM_ALIGN_DEVICE,
         infer_batch_size=cfg.VLLM_INFER_BATCH_SIZE,
+        inference_lock=gpu_inference_lock,
     )
     try:
         engine.load()
@@ -712,14 +722,19 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         logger.critical(f"vLLM 引擎加载失败: {e}", exc_info=True)
         sys.exit(1)
 
-    # 说话人分离引擎（Phase 2，可选，非 funasr：CAM++ + scipy/sklearn 聚类）：加载失败
-    # 降级关闭，不影响转写/实时主链路（容错对齐 standard）。独立门控让离线 CAM++
-    # 在 batch 边界为实时 final 让路，不与 GPU ASR 门控互相阻塞。
+    # ASR 与声纹共用实时优先级门控，离线推理在各自 batch 边界为实时 final 让路。
+    realtime_priority_gate = RealtimePriorityGate(enabled=True)
+
+    # 说话人分离引擎（可选，ReDimNet2 + scipy/sklearn 聚类）：加载失败
+    # 降级关闭，不影响转写/实时主链路（容错对齐 standard）。
     speaker_engine = None
     if cfg.ENABLE_SPEAKER:
         from app.engines.speaker_embedding_engine import SpeakerEmbeddingEngine
-        speaker_priority_gate = RealtimePriorityGate(enabled=True)
-        speaker_engine = SpeakerEmbeddingEngine(priority_gate=speaker_priority_gate)
+        speaker_engine = SpeakerEmbeddingEngine(
+            device="cuda",
+            priority_gate=realtime_priority_gate,
+            inference_lock=gpu_inference_lock,
+        )
         try:
             speaker_engine.load()
         except Exception as e:
@@ -768,7 +783,6 @@ def _assemble_vllm(app: FastAPI, args) -> None:
     speaker_db_enabled = speaker_service is not None and not speaker_tag_mismatch
     # 转写联动仅在识别可用时注入（失配 = 库内模板与当前引擎不可比，联动同样禁用）
     linked_speaker_service = speaker_service if speaker_db_enabled else None
-    realtime_priority_gate = RealtimePriorityGate(enabled=True)
 
     stream_backend = VllmStreamBackend(
         engine,

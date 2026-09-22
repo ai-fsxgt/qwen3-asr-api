@@ -90,8 +90,8 @@ if [ "${1:-}" = "--vllm" ]; then
     pip install --upgrade pip
     echo "[INFO] 安装 vLLM 依赖（requirements-vllm.txt；qwen-asr[vllm] 将拉取 vllm/torch，体积较大）..."
     pip install -r requirements-vllm.txt
-    # vLLM 用 HF 全精度 ASR + 对齐器 + CAM++ 声纹（与 standard 共用 models/）；data 供任务持久化/声纹库
-    mkdir -p models/asr/0.6b models/asr/1.7b models/asr/aligner models/speaker/campplus logs data
+    # vLLM 用 HF 全精度 ASR + 对齐器 + ReDimNet2 声纹（与 standard 共用 models/）；data 供任务持久化/声纹库
+    mkdir -p models/asr/0.6b models/asr/1.7b models/asr/aligner models/speaker/redimnet2-b6 logs data
     echo ""
     echo "=========================================="
     echo "  vLLM 环境安装完成（venv-vllm）"
@@ -182,7 +182,7 @@ echo "[INFO] Installing project dependencies..."
 pip install -r requirements.txt
 
 # 6. Create necessary directories
-mkdir -p models/asr/0.6b models/asr/1.7b models/align/0.6b models/vad/fsmn models/vad/fsmn-onnx models/punc/ct-transformer models/punc/ct-transformer-onnx logs
+mkdir -p models/asr/0.6b models/asr/1.7b models/align/0.6b models/vad/fsmn models/vad/fsmn-onnx models/punc/ct-transformer models/punc/ct-transformer-onnx models/speaker/redimnet2-b6 logs
 
 # 7. Select model download method
 echo ""

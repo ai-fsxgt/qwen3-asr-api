@@ -37,7 +37,7 @@
 
 ### 2.3 说话人分离 / 识别
 - 说话人能力（`--enable-speaker` / 声纹库 `--enable-speaker-db`）在**两种模式的离线与实时链路都支持**：实时仅在句级 `final` 输出匿名 `speaker`，声纹命中时再输出 `speaker_name`；未稳定的短段可不带标签，`partial` 永远不带说话人。
-- vLLM 模式差异：声纹引擎同为 CAM++，离线语音区间和实时断句都使用能量检测替代 FSMN-VAD（依赖中性、不引 funasr，边界较粗）。实时在句末对该句音频提取一次 embedding 并在线归簇，不会阻塞或回改已经下发的 partial。
+- vLLM 模式使用 ReDimNet2-B6 声纹引擎（GPU），离线语音区间和实时断句都使用能量检测替代 FSMN-VAD（依赖中性、不引 funasr，边界较粗）。实时在句末对该句音频提取一次 embedding 并在线归簇，不会阻塞或回改已经下发的 partial。
 
 ### 2.4 兼容接口（OpenAI / DashScope）
 - 离线兼容（OpenAI `audio/transcriptions`、DashScope 录音文件识别）**两模式都支持**。
@@ -64,7 +64,7 @@
 | 离线 `/v2/asr` | ✅ | ✅（同契约） |
 | 分段 | FSMN-VAD 精分段 | 标点优先（词级时间戳定位） |
 | 标点 | CT-Transformer（可单独关） | 模型原生（恒有，不可单独关） |
-| 说话人分离 / 识别 | ✅（FSMN-VAD + CAM++；实时 final） | ✅（能量端点 + CAM++；实时 final） |
+| 说话人分离 / 识别 | ✅（FSMN-VAD + ReDimNet2-B6；实时 final） | ✅（能量端点 + ReDimNet2-B6；实时 final） |
 | 兼容离线（OpenAI/DashScope） | ✅ | ✅ |
 | 兼容实时——整句 | ✅（需 `--enable-stream`） | ✅（随兼容开关，无需 `--enable-stream`） |
 | 兼容实时——逐字/中间增量 | ❌ | ✅ DashScope 中间结果 / OpenAI delta(best-effort) |

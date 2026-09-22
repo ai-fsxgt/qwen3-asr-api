@@ -6,7 +6,7 @@
 """
 
 # ─── 可覆盖参数的服务端硬边界（防滥用）───
-SPK_THRESHOLD_RANGE = (0.2, 0.9)        # 在线归簇余弦阈值（实测可用 [0.35,0.65]，放宽留余量）
+SPK_THRESHOLD_RANGE = (0.2, 0.9)        # 在线归簇余弦阈值的允许范围
 SPK_MIN_SEG_RANGE = (0, 10000)          # ms，短段门槛
 SPK_MAX_RANGE = (1, 50)                 # 说话人上限（资源界）
 MAX_SEGMENT_SEC_RANGE = (1, 60)         # s，实时长句兜底切分

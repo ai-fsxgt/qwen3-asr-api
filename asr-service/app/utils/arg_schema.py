@@ -380,9 +380,9 @@ ARG_SPECS = (
     ArgSpec(
         key="speaker_threshold", flags=("--speaker-threshold",), default=0.5, type=float,
         group="说话人分离",
-        help="实时在线归簇余弦阈值，实测可用区间 [0.35, 0.65] (default: 0.5)",
-        help_en="Realtime online clustering cosine threshold; usable range "
-                "[0.35, 0.65] (default: 0.5)",
+        help="实时在线归簇余弦阈值，换模型后需用实际数据重新标定 (default: 0.5)",
+        help_en="Realtime online clustering cosine threshold; recalibrate with "
+                "real data after changing models (default: 0.5)",
     ),
     ArgSpec(
         key="speaker_max", flags=("--speaker-max",), default=8, type=int,
@@ -438,18 +438,18 @@ ARG_SPECS = (
     ArgSpec(
         key="speaker_identify_min_sec", flags=("--speaker-identify-min-sec",),
         default=5.0, type=float, min_value=0.1, group="声纹库",
-        help="每个独立识别证据批次所需的最短有效语音秒数 (default: 5.0)",
-        help_en="Minimum effective speech seconds required for each independent "
-                "identification evidence batch (default: 5.0)",
+        help="每个滑动识别窗口所需的有效语音秒数 (default: 5.0)",
+        help_en="Effective speech seconds required for each sliding "
+                "identification window (default: 5.0)",
     ),
     ArgSpec(
         key="speaker_realtime_confirmations",
         flags=("--speaker-realtime-confirmations",), default=2, type=int,
         min_value=1,
         group="声纹库",
-        help="实时连续多少个独立证据批次命中同一身份后展示姓名 (default: 2)",
-        help_en="Independent realtime evidence batches that must consecutively "
-                "match the same identity before exposing a name (default: 2)",
+        help="实时连续多少个滑动窗口命中同一身份后展示姓名 (default: 2)",
+        help_en="Sliding realtime windows that must consecutively match the "
+                "same identity before exposing a name (default: 2)",
     ),
     ArgSpec(
         key="speaker_enroll_min_sec", flags=("--speaker-enroll-min-sec",), default=3.0, type=float,

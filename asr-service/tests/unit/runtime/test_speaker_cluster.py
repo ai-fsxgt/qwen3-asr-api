@@ -141,15 +141,15 @@ def test_offline_ahc_threshold_semantics():
     assert len(np.unique(cluster_offline(far))) == 2  # 簇间相似度 ≈0.2 → 分
 
 
-def test_offline_minor_cluster_absorbed():
+def test_offline_dissimilar_minor_cluster_is_preserved():
     embs = np.stack(
         [around(unit(0)) for _ in range(10)]
         + [around(unit(1)) for _ in range(10)]
-        + [around(unit(2)) for _ in range(3)]  # 小簇（≤4 窗）
+        + [around(unit(2)) for _ in range(3)]  # 小簇与两个大簇都不相似
     )
     labels = cluster_offline(embs)
-    assert len(np.unique(labels)) == 2
-    assert set(labels[20:]) <= {0, 1}  # 小簇成员并入大簇
+    assert len(np.unique(labels)) == 3
+    assert set(labels[20:]) == {2}  # 不强制并入无关说话人
 
 
 def test_offline_spectral_branch_two_clusters():

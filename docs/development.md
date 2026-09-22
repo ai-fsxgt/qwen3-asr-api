@@ -33,7 +33,7 @@ venv/bin/python -m pip install -r requirements.txt        # 运行期
 venv/bin/python -m pip install -r requirements-test.txt   # 测试
 ```
 
-> 模型首次启动按需自动下载（ModelScope/HuggingFace），见 [部署指南](deployment.md)。
+> ASR/VAD/标点模型首次启动按需自动下载（ModelScope/HuggingFace）；ReDimNet2 声纹权重需手动准备，见 [部署指南](deployment.md)。
 
 ## 2. 依赖分层
 
@@ -70,8 +70,9 @@ venv/bin/python -m pytest tests/unit/api/test_compat_openai.py::test_json_defaul
 
 ```bash
 cd asr-service/scripts/e2e
-./run.sh                                              # 一键 mock 测试（无需真模型）
-./run.sh --base-url http://127.0.0.1:8765 --api-key sk-xxx   # 改测真实服务
+./run.sh --audio /path/to/speech.wav                  # 一键 mock 测试（无需真模型）
+./run.sh --audio /path/to/speech.wav \
+  --base-url http://127.0.0.1:8765 --api-key sk-xxx   # 改测真实服务
 ./run.sh --list                                       # 列出所有 check
 ```
 

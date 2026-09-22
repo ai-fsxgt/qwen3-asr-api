@@ -3,7 +3,8 @@
 #
 # 默认对 mock 服务测试（无需真模型，验证端点/SDK 字段/WS 握手/SSE/错误码/下载链路）。
 # 传 --base-url 可改测一个真实运行的服务（此时不起 mock）：
-#   ./run.sh --base-url http://127.0.0.1:8765 --api-key sk-xxx
+#   ./run.sh --audio /path/to/speech.wav \
+#     --base-url http://127.0.0.1:8765 --api-key sk-xxx
 #
 # 首次运行自动建 venv 并装依赖（scripts/e2e/.venv，已 gitignore）。
 set -euo pipefail
