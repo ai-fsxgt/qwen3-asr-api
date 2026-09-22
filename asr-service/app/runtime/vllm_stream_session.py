@@ -367,34 +367,41 @@ class VllmStreamSession:
         service = self._speaker_service
         if service is None:
             return None
-        identity_audio = cluster.take_identity_audio(
+        identity_windows = cluster.take_identity_audio_windows(
             label,
             cfg.SPEAKER_IDENTIFY_MIN_SEC,
             _TARGET_SR,
+            cfg.SPEAKER_REALTIME_CONFIRMATIONS,
         )
-        if identity_audio is None:
+        if not identity_windows:
             return self._spk_identity_tracker.confirmed_name(label)
+        name = self._spk_identity_tracker.confirmed_name(label)
         try:
-            embedding = await self._in_speaker_thread(
-                self._speaker.embed_realtime_identity_segment,
-                identity_audio,
-            )
-            duration_sec = len(identity_audio) / _TARGET_SR
-            match = await self._in_speaker_thread(
-                _map_speaker_identity,
-                service,
-                label,
-                embedding,
-                duration_sec,
-                self._spk_id_threshold,
-                self._spk_id_margin,
-            )
+            for identity_audio in identity_windows:
+                embedding = await self._in_speaker_thread(
+                    self._speaker.embed_realtime_identity_segment,
+                    identity_audio,
+                )
+                duration_sec = len(identity_audio) / _TARGET_SR
+                match = await self._in_speaker_thread(
+                    _map_speaker_identity,
+                    service,
+                    label,
+                    embedding,
+                    duration_sec,
+                    self._spk_id_threshold,
+                    self._spk_id_margin,
+                )
+                if (
+                    generation != self._generation
+                    or cluster is not self._spk_cluster
+                ):
+                    return None
+                name = self._spk_identity_tracker.observe(label, match)
         except Exception as exc:
             logger.warning(f"[vllm-stream] 声纹识别失败，本段仅保留匿名标签: {exc}")
             return None
-        if generation != self._generation or cluster is not self._spk_cluster:
-            return None
-        return self._spk_identity_tracker.observe(label, match)
+        return name
 
     async def _annotate_final(self, msg, embedded, generation):
         if msg is None or generation != self._generation:

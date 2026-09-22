@@ -432,24 +432,40 @@ class StreamSession:
         yield msg
 
     def _lookup_speaker_name(self, spk: str) -> str | None:
-        """用包含新增语音的最近证据查询声纹库，并执行连续命中确认。"""
+        """按时间顺序消费已有证据，并在当前段内完成连续命中确认。"""
         cluster = self._spk_cluster      # 本地引用：release() 并发置 None 防护
         if cluster is None:
             return None
-        identity_audio = cluster.take_identity_audio(
+        identity_windows = cluster.take_identity_audio_windows(
             spk,
             cfg.SPEAKER_IDENTIFY_MIN_SEC,
             _TARGET_SR,
+            cfg.SPEAKER_REALTIME_CONFIRMATIONS,
         )
-        if identity_audio is None:
+        if not identity_windows:
             return self._spk_identity_tracker.confirmed_name(spk)
-        embedding = self._speaker.embed_realtime_identity_segment(identity_audio)
-        duration_sec = len(identity_audio) / _TARGET_SR
-        mapping = self._speaker_service.map_clusters(
-            [{"label": spk, "centroid": embedding, "dur_sec": duration_sec}],
-            id_threshold=self._spk_id_threshold, id_margin=self._spk_id_margin)
-        match = mapping[0] if mapping and mapping[0].get("speaker_id") else None
-        return self._spk_identity_tracker.observe(spk, match)
+        name = self._spk_identity_tracker.confirmed_name(spk)
+        for identity_audio in identity_windows:
+            embedding = self._speaker.embed_realtime_identity_segment(
+                identity_audio
+            )
+            duration_sec = len(identity_audio) / _TARGET_SR
+            mapping = self._speaker_service.map_clusters(
+                [{
+                    "label": spk,
+                    "centroid": embedding,
+                    "dur_sec": duration_sec,
+                }],
+                id_threshold=self._spk_id_threshold,
+                id_margin=self._spk_id_margin,
+            )
+            match = (
+                mapping[0]
+                if mapping and mapping[0].get("speaker_id")
+                else None
+            )
+            name = self._spk_identity_tracker.observe(spk, match)
+        return name
 
 
 class VadOfflineBackend:
