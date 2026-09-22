@@ -34,8 +34,9 @@ numpy==2.2.6
 librosa==0.11.0
 soundfile==0.14.0
 
-# 模型管理（本地权重加载元信息）
+# ASR/对齐模型下载管理（ReDimNet2 权重由部署方手动提供）
 huggingface_hub==0.36.2
+modelscope==1.33.0
 
 # 说话人分离/声纹识别（Phase 2，可选能力 --enable-speaker；复用 vLLM 镜像的 torch，无 funasr 冲突）：
 #   scipy / scikit-learn —— 离线聚类（AHC/谱聚类），speaker_cluster 惰性 import

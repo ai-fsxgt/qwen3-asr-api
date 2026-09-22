@@ -394,19 +394,21 @@ def main():
             print(f"  {name}")
         return 0
 
-    if not args.audio:
-        print(RED("请通过 --audio 指定测试音频"), file=sys.stderr)
-        return 2
-
     only = {s.strip() for s in args.only.split(",") if s.strip()}
     skip = {s.strip() for s in args.skip.split(",") if s.strip()}
     selected = [n for n in checks if (not only or n in only) and n not in skip]
 
-    if not os.path.isfile(args.audio):
-        print(RED(f"音频不存在: {args.audio}"), file=sys.stderr)
-        return 2
+    needs_audio = any(name != "openai-models" for name in selected)
+    if needs_audio:
+        if not args.audio:
+            print(RED("请通过 --audio 指定测试音频"), file=sys.stderr)
+            return 2
+        if not os.path.isfile(args.audio):
+            print(RED(f"音频不存在: {args.audio}"), file=sys.stderr)
+            return 2
 
-    print(f"目标服务：{args.base_url}   音频：{os.path.basename(args.audio)}   "
+    audio_name = os.path.basename(args.audio) if args.audio else "未使用"
+    print(f"目标服务：{args.base_url}   音频：{audio_name}   "
           f"鉴权：{'on' if args.api_key else 'off'}")
     print("─" * 56)
 

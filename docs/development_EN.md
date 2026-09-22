@@ -70,8 +70,9 @@ venv/bin/python -m pytest tests/unit/api/test_compat_openai.py::test_json_defaul
 
 ```bash
 cd asr-service/scripts/e2e
-./run.sh                                              # one-shot mock test (no real model)
-./run.sh --base-url http://127.0.0.1:8765 --api-key sk-xxx   # test a real service
+./run.sh --audio /path/to/speech.wav                  # one-shot mock test (no real model)
+./run.sh --audio /path/to/speech.wav \
+  --base-url http://127.0.0.1:8765 --api-key sk-xxx   # test a real service
 ./run.sh --list                                       # list all checks
 ```
 
