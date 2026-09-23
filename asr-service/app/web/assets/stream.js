@@ -6,7 +6,7 @@
 (function () {
   'use strict';
   const { ref, reactive, computed, watch, onMounted, onBeforeUnmount } = Vue;
-  const { fmtMs, fmtBytes, spkIdx, apiKey, mountApp, makeT, locale } = window.AsrCommon;
+  const { fmtMs, fmtBytes, apiKey, mountApp, makeT, locale } = window.AsrCommon;
 
   const M = {
     zh: {
@@ -26,9 +26,8 @@
       // 会话协议卡片（输入源下方）
       'sess.title': '会话协议',
       'cap.flag.partial_results': '增量结果', 'cap.flag.word_timestamps': '词级时间戳',
-      'cap.flag.languages_auto': '自动语种', 'cap.flag.speaker_labels': '说话人分离',
-      'cap.flag.speaker_identification': '声纹识别', 'cap.flag.noise_filter_tunable': '降噪可调',
-      'cap.flag.speaker_tunable': '说话人可调', 'cap.flag.endpoint_tunable': '断句可调',
+      'cap.flag.languages_auto': '自动语种', 'cap.flag.noise_filter_tunable': '降噪可调',
+      'cap.flag.endpoint_tunable': '断句可调',
       'cap.flag.output_toggles': '输出可控',
       'cap.tip.partial_results': '需 vLLM 模式才支持（当前 vad-offline 后端按段输出，不产增量结果）',
       // 诊断指标
@@ -38,15 +37,12 @@
       'diag.unit.sample': '样本', 'diag.unit.ms': 'ms',
       // 输入源面板
       'panel.input': '输入源', 'input.langPlaceholder': '语言（默认 auto，如 zh / en）',
-      'input.identify': '声纹识别（真名标注）',
       'input.appendMode': '追加输出（保留上次结果，分隔续写）',
       // 高级设置（随 start 消息按会话覆盖）
       'adv.title': '高级设置（可选覆盖）',
       'adv.hint': '留空＝用服务端默认；关闭开关＝本次会话不执行该步骤。会话进行中不可改。',
       'adv.farfield': '远场降噪', 'adv.noiseFilter': '段级降噪过滤', 'adv.energyFloor': '能量门 (dBFS)', 'adv.snrMin': '信噪比门 (dB)',
       'adv.timing': '断句 / 分段', 'adv.endSilence': '断句尾静音 (ms)', 'adv.segmentSec': '长句切分 (秒)',
-      'adv.speaker': '说话人', 'adv.diarize': '说话人分离', 'adv.spkThreshold': '归簇阈值 (余弦 0.2–0.9)', 'adv.spkMinSeg': '短段门槛 (ms)', 'adv.spkMax': '说话人上限',
-      'adv.idThreshold': '识别阈值 (余弦 0–1)', 'adv.idMargin': '区分余量 (余弦 0–1)',
       'adv.output': '输出内容', 'adv.punc': '标点恢复', 'adv.words': '词级时间戳', 'adv.default': '默认',
       'warn.ignored': '部分参数因功能未启用被忽略：{0}',
       'tab.mic': '麦克风', 'tab.file': '文件模拟',
@@ -86,9 +82,8 @@
       'cap.sampleRate': 'Sample rate', 'cap.capabilities': 'Capabilities',
       'sess.title': 'Session protocol',
       'cap.flag.partial_results': 'Partial results', 'cap.flag.word_timestamps': 'Word timestamps',
-      'cap.flag.languages_auto': 'Auto language', 'cap.flag.speaker_labels': 'Speaker labels',
-      'cap.flag.speaker_identification': 'Speaker ID', 'cap.flag.noise_filter_tunable': 'Denoise tunable',
-      'cap.flag.speaker_tunable': 'Speaker tunable', 'cap.flag.endpoint_tunable': 'Endpoint tunable',
+      'cap.flag.languages_auto': 'Auto language', 'cap.flag.noise_filter_tunable': 'Denoise tunable',
+      'cap.flag.endpoint_tunable': 'Endpoint tunable',
       'cap.flag.output_toggles': 'Output toggles',
       'cap.tip.partial_results': 'Requires vLLM mode (the current vad-offline backend emits per segment, not incrementally)',
       'diag.sent': 'Send rate', 'diag.recv': 'Recv rate', 'diag.buf': 'Send buffer',
@@ -96,14 +91,11 @@
       'diag.unit.frame': 'fr/s', 'diag.unit.msg': 'msg/s', 'diag.unit.kb': 'KB',
       'diag.unit.sample': 'samples', 'diag.unit.ms': 'ms',
       'panel.input': 'Input source', 'input.langPlaceholder': 'Language (default auto, e.g. zh / en)',
-      'input.identify': 'Speaker identification (label real names)',
       'input.appendMode': 'Append output (keep previous results, continue after a divider)',
       'adv.title': 'Advanced (optional overrides)',
       'adv.hint': 'Empty = server default; turning a switch off skips that step. Locked while a session is active.',
       'adv.farfield': 'Far-field denoise', 'adv.noiseFilter': 'Segment denoise gate', 'adv.energyFloor': 'Energy gate (dBFS)', 'adv.snrMin': 'SNR gate (dB)',
       'adv.timing': 'Endpoint / segment', 'adv.endSilence': 'End silence (ms)', 'adv.segmentSec': 'Max segment (s)',
-      'adv.speaker': 'Speaker', 'adv.diarize': 'Speaker diarization', 'adv.spkThreshold': 'Cluster threshold (cosine 0.2–0.9)', 'adv.spkMinSeg': 'Min segment (ms)', 'adv.spkMax': 'Max speakers',
-      'adv.idThreshold': 'ID threshold (cosine 0–1)', 'adv.idMargin': 'ID margin (cosine 0–1)',
       'adv.output': 'Output', 'adv.punc': 'Punctuation', 'adv.words': 'Word timestamps', 'adv.default': 'default',
       'warn.ignored': 'Some params were ignored (feature not enabled): {0}',
       'tab.mic': 'Microphone', 'tab.file': 'File simulation',
@@ -175,20 +167,13 @@
   const AppBody = {
     setup() {
       const lang = ref('');
-      // —— 声纹识别（随 start 消息发送；capabilities 探测到 speaker_identification 才显示开关）——
-      const canIdentify = ref(false);
-      const identifySpeakers = ref(false);
       // —— 高级设置：能力门控标志（precheck 填充）+ 按会话覆盖值（null=不下发，用服务端默认）——
-      const srv = reactive({ punc: false, words: false, speaker: false, speakerDb: false, defaults: {} });
+      const srv = reactive({ punc: false, words: false, defaults: {} });
       const adv = reactive({
         noiseFilter: false, energyFloor: null, snrMin: null,
-        spkThreshold: null, spkMinSeg: null, spkMax: null, idThreshold: null, idMargin: null,
         maxEndSilence: null, maxSegmentSec: null,
-        withPunc: true, withWords: true, diarize: true,   // 降级开关：默认开，关闭才下发 false
+        withPunc: true, withWords: true,
       });
-      // 关闭说话人分离时联动复位声纹识别——identify 依赖 diarize，否则会把 identify_speakers=true
-      // 与 diarize=false 一并下发，服务端静默丢弃，UI 却仍显示识别开启
-      watch(() => adv.diarize, (on) => { if (!on) identifySpeakers.value = false; });
       const warn = ref('');               // 非致命软提示（params_ignored）
       // 数值框占位：有服务端默认值时直接显示该值（留空即用此值），否则显示「默认」
       function ph(key) {
@@ -215,14 +200,14 @@
       // 能力芯片渲染顺序；已知键给本地化短标签，未知键回退原始键名（漏配可见不报错）
       const CAP_ORDER = [
         'languages_auto', 'partial_results', 'word_timestamps',
-        'speaker_labels', 'speaker_identification',
-        'noise_filter_tunable', 'speaker_tunable', 'endpoint_tunable', 'output_toggles',
+        'noise_filter_tunable', 'endpoint_tunable', 'output_toggles',
       ];
+      const CAP_HIDDEN = new Set(['speaker_labels', 'speaker_identification', 'speaker_tunable']);
       const capFlags = computed(() => {
         const c = capParts.value && capParts.value.capabilities;
         if (!c) return [];
         const known = CAP_ORDER.filter(k => k in c);
-        const extra = Object.keys(c).filter(k => !CAP_ORDER.includes(k));
+        const extra = Object.keys(c).filter(k => !CAP_ORDER.includes(k) && !CAP_HIDDEN.has(k));
         // 已启用排前：成排亮色芯片更易扫读，禁用项弱化随后（sort 稳定，组内保持 CAP_ORDER）
         // 目前仅「增量结果」带「为何不可用」说明（需 vLLM）；后续若多了再抽成集合/由服务端下发
         return known.concat(extra)
@@ -231,12 +216,12 @@
       });
 
       // —— 结果 ——
-      const finals = reactive([]);        // {key, start, text, words, speaker, speakerName}
+      const finals = reactive([]);        // {key, start, text, words}
       const partial = ref('');
       const appendMode = ref(false);      // 追加输出：开始新会话时不清空结果，按批次派生分隔线续写
       let finalSeq = 0, batchSeq = 0;     // batchSeq：每次追加新会话 +1，渲染层据相邻条目 batch 变化插分隔线
       function appendFinal(m) {
-        finals.push({ key: ++finalSeq, batch: batchSeq, start: m.start, text: m.text || '', words: (m.words && m.words.length) || 0, speaker: m.speaker || null, speakerName: m.speaker_name || null });
+        finals.push({ key: ++finalSeq, batch: batchSeq, start: m.start, text: m.text || '', words: (m.words && m.words.length) || 0 });
         if (finals.length > MAX_TRANSCRIPT_LINES) finals.shift();
       }
       function clearResults() { finals.length = 0; partial.value = ''; batchSeq = 0; }
@@ -320,24 +305,16 @@
         const l = lang.value.trim();
         const m = { type: 'start', audio_fs: RT_SR, wav_name: 'web-test' };
         if (l && l !== 'auto') m.language = l;
-        if (identifySpeakers.value) m.identify_speakers = true;
         // 远场降噪
         if (adv.noiseFilter) m.noise_filter = true;
         if (adv.energyFloor != null) m.energy_floor_dbfs = adv.energyFloor;
         if (adv.snrMin != null) m.snr_min_db = adv.snrMin;
-        // 说话人
-        if (adv.spkThreshold != null) m.speaker_threshold = adv.spkThreshold;
-        if (adv.spkMinSeg != null) m.speaker_min_seg_ms = adv.spkMinSeg;
-        if (adv.spkMax != null) m.speaker_max = adv.spkMax;
-        if (adv.idThreshold != null) m.speaker_id_threshold = adv.idThreshold;
-        if (adv.idMargin != null) m.speaker_id_margin = adv.idMargin;
         // 断句 / 分段
         if (adv.maxEndSilence != null) m.max_end_silence_ms = adv.maxEndSilence;
         if (adv.maxSegmentSec != null) m.max_segment_sec = adv.maxSegmentSec;
         // 输出降级：仅功能已加载且用户关闭时下发 false（不下发＝沿用服务端默认）
         if (srv.punc && adv.withPunc === false) m.with_punc = false;
         if (srv.words && adv.withWords === false) m.with_words = false;
-        if (srv.speaker && adv.diarize === false) m.diarize = false;
         return m;
       }
       function waitDrain() {
@@ -657,11 +634,8 @@
           if (r.ok) {
             const c = await r.json();
             const stream = c.stream || {};
-            canIdentify.value = !!stream.speaker_identification;
             streamDisabled.value = !stream.enabled;
             srv.words = !!stream.word_timestamps;
-            srv.speaker = !!stream.speaker_labels;
-            srv.speakerDb = !!stream.speaker_identification;
             srv.defaults = c.defaults || {};
           }
           const h = await fetch('/v2/health');     // punc 能力仅 health 暴露
@@ -678,10 +652,10 @@
 
       return {
         t,
-        lang, canIdentify, identifySpeakers, appendMode, srv, adv, warn, ph,
+        lang, appendMode, srv, adv, warn, ph,
         streamState, statusText, busy, source,
         capWarning, hint, capParts, capFlags, diag, vuRef,
-        finals, partial, fmtMs, transcriptRef, spkIdx,
+        finals, partial, fmtMs, transcriptRef,
         logs, logOpen, logRef,
         streamFile, streamFileList, streamFileSize, onStreamUploadChange,
         noThrottle, useFfmpeg, ffLoading, fileProgress, fileRunning,
@@ -710,9 +684,6 @@
             <n-card :bordered="false" class="panel" size="small">
               <template #header><span class="panel-title"><a-icon name="mic" size="15"></a-icon>{{ t('panel.input') }}</span></template>
               <n-input v-model:value="lang" size="small" :placeholder="t('input.langPlaceholder')" style="margin-bottom:12px;"></n-input>
-              <n-checkbox v-if="canIdentify" v-model:checked="identifySpeakers" size="small" :disabled="busy || !adv.diarize" style="margin-bottom:12px;">
-                {{ t('input.identify') }}
-              </n-checkbox>
               <n-checkbox v-model:checked="appendMode" size="small" :disabled="busy" style="margin-bottom:12px;">
                 {{ t('input.appendMode') }}
               </n-checkbox>
@@ -728,17 +699,6 @@
                   <div class="sec-title">{{ t('adv.timing') }}</div>
                   <div class="adv-field"><span class="lbl">{{ t('adv.endSilence') }}</span><n-input-number v-model:value="adv.maxEndSilence" size="small" :min="200" :max="2000" :step="50" clearable :placeholder="ph('max_end_silence_ms')" :disabled="busy" style="width:128px;"></n-input-number></div>
                   <div class="adv-field"><span class="lbl">{{ t('adv.segmentSec') }}</span><n-input-number v-model:value="adv.maxSegmentSec" size="small" :min="1" :max="60" clearable :placeholder="ph('max_segment_sec')" :disabled="busy" style="width:128px;"></n-input-number></div>
-                  <template v-if="srv.speaker">
-                    <div class="sec-title">{{ t('adv.speaker') }}</div>
-                    <div class="adv-field"><span class="lbl">{{ t('adv.diarize') }}</span><n-switch v-model:value="adv.diarize" size="small" :disabled="busy"></n-switch></div>
-                    <div class="adv-field"><span class="lbl" :class="{ muted: !adv.diarize }">{{ t('adv.spkThreshold') }}</span><n-input-number v-model:value="adv.spkThreshold" size="small" :min="0.2" :max="0.9" :step="0.05" clearable :placeholder="ph('speaker_threshold')" :disabled="busy || !adv.diarize" style="width:128px;"></n-input-number></div>
-                    <div class="adv-field"><span class="lbl" :class="{ muted: !adv.diarize }">{{ t('adv.spkMinSeg') }}</span><n-input-number v-model:value="adv.spkMinSeg" size="small" :min="0" :max="10000" :step="100" clearable :placeholder="ph('speaker_min_seg_ms')" :disabled="busy || !adv.diarize" style="width:128px;"></n-input-number></div>
-                    <div class="adv-field"><span class="lbl" :class="{ muted: !adv.diarize }">{{ t('adv.spkMax') }}</span><n-input-number v-model:value="adv.spkMax" size="small" :min="1" :max="50" clearable :placeholder="ph('speaker_max')" :disabled="busy || !adv.diarize" style="width:128px;"></n-input-number></div>
-                    <template v-if="srv.speakerDb">
-                      <div class="adv-field"><span class="lbl" :class="{ muted: !adv.diarize }">{{ t('adv.idThreshold') }}</span><n-input-number v-model:value="adv.idThreshold" size="small" :min="0" :max="1" :step="0.05" clearable :placeholder="ph('speaker_id_threshold')" :disabled="busy || !adv.diarize" style="width:128px;"></n-input-number></div>
-                      <div class="adv-field"><span class="lbl" :class="{ muted: !adv.diarize }">{{ t('adv.idMargin') }}</span><n-input-number v-model:value="adv.idMargin" size="small" :min="0" :max="1" :step="0.05" clearable :placeholder="ph('speaker_id_margin')" :disabled="busy || !adv.diarize" style="width:128px;"></n-input-number></div>
-                    </template>
-                  </template>
                   <template v-if="srv.punc || srv.words">
                     <div class="sec-title">{{ t('adv.output') }}</div>
                     <div v-if="srv.punc" class="adv-field"><span class="lbl">{{ t('adv.punc') }}</span><n-switch v-model:value="adv.withPunc" size="small" :disabled="busy"></n-switch></div>
@@ -837,7 +797,7 @@
                   <div v-if="i > 0 && line.batch !== finals[i - 1].batch" class="transcript-divider"><span>{{ t('result.divider') }}</span></div>
                   <div class="transcript-line">
                     <span class="t">{{ line.start != null ? fmtMs(line.start) : '' }}</span>
-                    <span class="tx"><span v-if="line.speaker" class="speaker-badge" :class="'spk-' + spkIdx(line.speaker)">{{ line.speakerName || line.speaker }}</span>{{ line.text }}<n-text v-if="line.words" depth="3" style="font-size:.78em;"> {{ t('result.words', line.words) }}</n-text></span>
+                    <span class="tx">{{ line.text }}<n-text v-if="line.words" depth="3" style="font-size:.78em;"> {{ t('result.words', line.words) }}</n-text></span>
                   </div>
                 </template>
                 <div v-if="partial" class="partial-line">{{ partial }}<span class="cursor-blk"></span></div>
