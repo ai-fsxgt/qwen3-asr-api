@@ -757,6 +757,52 @@ class SpeakerService:
             "auto_enrolled": True,
         }
 
+    def identify_stream_windows(
+        self,
+        waveform: np.ndarray,
+        speech_intervals: list[tuple[float, float]],
+        *,
+        id_threshold: float,
+        id_margin: float,
+    ) -> list[dict]:
+        """直接识别原始语音滑窗，保留时间位置，避免在线误归簇污染身份。"""
+        from app.engines.speaker_embedding_engine import DIARIZATION_STEP_SEC
+
+        sample_rate = self._engine.SAMPLE_RATE
+        speech = self._audio_from_source_intervals(
+            waveform, speech_intervals, sample_rate,
+        )
+        windows = make_identity_windows(
+            0.0,
+            len(speech) / sample_rate,
+            win=cfg.SPEAKER_IDENTIFY_MIN_SEC,
+            step=DIARIZATION_STEP_SEC,
+        )
+        if not windows:
+            return []
+        embeddings = self._engine.embed_realtime_windows(speech, windows)
+        decisions = self.store.identify_many_detailed(
+            list(embeddings), threshold=id_threshold, margin=id_margin,
+        )
+        anchors = []
+        for window, embedding, decision in zip(
+            windows, embeddings, decisions, strict=True,
+        ):
+            self._audit_identification(
+                decision, via="stream", duration_sec=window[1] - window[0],
+                threshold=id_threshold, required_margin=id_margin,
+            )
+            match = decision.as_match()
+            if match is not None:
+                anchors.append({
+                    **match,
+                    "embedding": embedding,
+                    "intervals": self._source_intervals_for_window(
+                        speech_intervals, *window,
+                    ),
+                })
+        return anchors
+
     def map_clusters(self, clusters: list[dict], *,
                      id_threshold: float | None = None,
                      id_margin: float | None = None) -> list[dict]:

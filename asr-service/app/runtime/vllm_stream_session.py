@@ -91,7 +91,14 @@ class _SegmentAudioBuffer:
 
 
 class _SpeakerEvidence(list):
-    """标记由真实声纹引擎生成的窗口证据，区别于测试替身的段级结果。"""
+    """带原始音频和时间位置的声纹窗口证据。"""
+
+    def __init__(self, items, waveform, windows, speech_intervals):
+        super().__init__(items)
+        self.waveform = waveform
+        self.windows = windows
+        self.speech_intervals = speech_intervals
+        self.labels = []
 
 
 def _embed_speaker_segment(speaker, audio: _SegmentAudioBuffer):
@@ -132,7 +139,10 @@ def _embed_speaker_segment(speaker, audio: _SegmentAudioBuffer):
             int((end - start) * 1000),
             identity_audio,
         ))
-    return _SpeakerEvidence(evidence)
+    return _SpeakerEvidence(
+        evidence, wav, windows,
+        [(start / 1000.0, end / 1000.0) for start, end in speech_spans],
+    )
 
 
 def _map_speaker_identity(
@@ -237,6 +247,8 @@ class VllmStreamSession:
         self._output_label_identities: dict[str, str] = {}
         self._used_output_labels: set[str] = set()
         self._pending_speaker_groups: list[dict] = []
+        self._cluster_identities: dict[str, dict] = {}
+        self._extra_finals: list[dict] = []
         self._generation = 0                   # configure/close 后使在途说话人结果失效
 
     def _reset_speaker_options(self):
@@ -340,6 +352,8 @@ class VllmStreamSession:
         self._output_label_identities = {}
         self._used_output_labels = set()
         self._pending_speaker_groups = []
+        self._cluster_identities = {}
+        self._extra_finals = []
         warnings = self._collect_ignored_params(cfg_msg)
         logger.info(f"[vllm-stream] 会话配置 sid={self.sid[:8]} audio_fs={self.audio_fs} "
                     f"language={self.language} chunk={self._chunk_size_sec or '默认'} "
@@ -519,6 +533,38 @@ class VllmStreamSession:
         group["last_segment_id"] = segment_id
         return group
 
+    def _identity_for_window(self, start, end, embedding, anchors):
+        candidates = []
+        for anchor in anchors:
+            overlap = sum(
+                max(0.0, min(end, right) - max(start, left))
+                for left, right in anchor["intervals"]
+            )
+            if overlap <= 0:
+                continue
+            similarity = float(embedding @ anchor["embedding"])
+            if similarity >= self._spk_threshold:
+                candidates.append((similarity, anchor))
+        # 身份长窗可能横跨两个人；时间重叠只用于筛选，不能代替声纹相似度。
+        return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
+    def _assign_identified_window(self, cluster, embedding, duration_ms, match):
+        speaker_id = match["speaker_id"]
+        label = next((
+            label for label, identity in self._cluster_identities.items()
+            if identity["speaker_id"] == speaker_id
+        ), None)
+        if label is None:
+            candidate = cluster.closest_label(embedding)
+            if candidate is not None and candidate not in self._cluster_identities:
+                label = candidate
+            else:
+                label = cluster.create_cluster(embedding)
+        if label is not None:
+            cluster.assign_to(label, embedding, duration_ms)
+            self._cluster_identities[label] = match
+        return label
+
     async def _annotate_final(self, msg, embedded, generation):
         if msg is None or generation != self._generation:
             return None
@@ -535,8 +581,35 @@ class VllmStreamSession:
         ]
         votes: dict[str, int] = {}
         touched_groups = []
+        anchors = []
+        if (
+            isinstance(embedded, _SpeakerEvidence)
+            and self._identify and self._speaker_service is not None
+        ):
+            anchors = await self._in_speaker_thread(
+                lambda: self._speaker_service.identify_stream_windows(
+                    embedded.waveform,
+                    embedded.speech_intervals,
+                    id_threshold=self._spk_id_threshold,
+                    id_margin=self._spk_id_margin,
+                ),
+            )
+            if generation != self._generation or cluster is not self._spk_cluster:
+                return None
+        window_labels = []
         try:
-            for embedding, duration_ms, identity_audio in embedded:
+            for index, (embedding, duration_ms, identity_audio) in enumerate(embedded):
+                match = self._identity_for_window(
+                    *embedded.windows[index], embedding, anchors,
+                ) if anchors else None
+                if match is not None:
+                    label = self._assign_identified_window(
+                        cluster, embedding, duration_ms, match,
+                    )
+                    window_labels.append(label)
+                    if label is not None:
+                        votes[label] = votes.get(label, 0) + duration_ms
+                    continue
                 if (
                     isinstance(embedded, _SpeakerEvidence)
                     and cluster.closest_label(embedding) is None
@@ -547,6 +620,7 @@ class VllmStreamSession:
                     )
                     if not any(existing is group for existing in touched_groups):
                         touched_groups.append(group)
+                    window_labels.append(None)
                     continue
                 label = cluster.assign(
                     embedding,
@@ -559,6 +633,7 @@ class VllmStreamSession:
                 )
                 if label is not None:
                     votes[label] = votes.get(label, 0) + duration_ms
+                window_labels.append(label)
 
             for group in touched_groups:
                 evidence_ms = sum(
@@ -600,9 +675,17 @@ class VllmStreamSession:
             return msg
         if not votes:
             return msg
+        if isinstance(embedded, _SpeakerEvidence):
+            embedded.labels = [
+                label or cluster.closest_label(item[0])
+                for label, item in zip(window_labels, embedded, strict=True)
+            ]
         label = max(votes, key=votes.get)
         identity = None
-        if self._identify and self._speaker_service is not None:
+        known = self._cluster_identities.get(label)
+        if known is not None:
+            identity = known["speaker_id"], known["name"]
+        elif self._identify and self._speaker_service is not None:
             try:
                 identity = await self._lookup_speaker_name(
                     label,
@@ -619,6 +702,82 @@ class VllmStreamSession:
         if name is not None:
             msg["speaker_name"] = name
         return msg
+
+    async def _split_speaker_final(self, msg, embedded, language):
+        if (
+            not isinstance(embedded, _SpeakerEvidence)
+            or len(set(embedded.labels) - {None}) < 2
+            or not msg["text"]
+            or not self._engine.align_enabled
+        ):
+            return msg
+        generation = self._generation
+        words = await self._infer(
+            self._engine.align_stream_text,
+            embedded.waveform, msg["text"], language,
+        )
+        if generation != self._generation:
+            return None
+        groups = []
+        cursor = 0
+        for word in words:
+            token = word["text"]
+            position = msg["text"].find(token, cursor)
+            if position < 0:
+                # 对齐器会规范化部分符号；无法定位原文时不猜测切字位置。
+                return msg
+            center = (word["start"] + word["end"]) / 2
+            candidates = [
+                (abs((start + end) / 2 - center), label)
+                for (start, end), label in zip(
+                    embedded.windows, embedded.labels, strict=True,
+                )
+                if label is not None
+            ]
+            label = min(candidates, key=lambda item: item[0])[1]
+            if not groups or groups[-1]["label"] != label:
+                groups.append({
+                    "label": label, "char_start": position,
+                    "start": msg["start"] + round(word["start"] * 1000),
+                })
+            cursor = position + len(token)
+        if len(groups) < 2:
+            return msg
+        groups[0]["char_start"] = 0
+        groups[0]["start"] = msg["start"]
+        finals = []
+        for index, group in enumerate(groups):
+            next_group = groups[index + 1] if index + 1 < len(groups) else None
+            final = {
+                "type": "final",
+                "seg_id": msg["seg_id"] if index == 0 else self.seg_id,
+                "text": msg["text"][group["char_start"]:
+                    next_group["char_start"] if next_group else None],
+                "start": group["start"],
+                "end": next_group["start"] if next_group else msg["end"],
+            }
+            if index:
+                self.seg_id += 1
+            identity = self._cluster_identities.get(group["label"])
+            speaker_id, name = (
+                (identity["speaker_id"], identity["name"])
+                if identity is not None
+                else self._spk_identity_tracker.confirmed_identity(group["label"])
+                or (None, None)
+            )
+            final["speaker"] = self._display_label(
+                group["label"], speaker_id,
+            )
+            if name is not None:
+                final["speaker_name"] = name
+            finals.append(final)
+        self._extra_finals.extend(finals[1:])
+        return finals[0]
+
+    def _final_messages(self, final):
+        messages = [final, *self._extra_finals]
+        self._extra_finals = []
+        return messages
 
     def _overflow_result(self, state, exc):
         logger.warning(
@@ -653,7 +812,7 @@ class VllmStreamSession:
             raise
         if generation != self._generation:
             return None
-        text, _ = finish_result
+        text, language = finish_result
         if self._seg_start_ms is None:
             logger.info(f"[vllm-stream] 关闭 SDK state，无前端分段输出 sid={self.sid[:8]} end={end_ms}ms")
             final = None
@@ -663,7 +822,10 @@ class VllmStreamSession:
         if final is None:
             return None
         msg, _, final_generation = final
-        return await self._annotate_final(msg, embedded, final_generation)
+        msg = await self._annotate_final(msg, embedded, final_generation)
+        if msg is None:
+            return None
+        return await self._split_speaker_final(msg, embedded, language)
 
     async def _feed_piece(self, arr, *, active):
         text, _ = await self._infer(self._engine.feed, arr, self.state)
@@ -741,7 +903,8 @@ class VllmStreamSession:
                     final = await self._finish_segment(
                         self._total_ms, overflow=exc)
                     if final is not None:
-                        yield final
+                        for message in self._final_messages(final):
+                            yield message
                     # 丢弃已污染的旧 state，把当前块在全新 state 中只重放一次。
                     if active and generation == self._generation:
                         await self._ensure_active_state(self._total_ms)
@@ -768,19 +931,22 @@ class VllmStreamSession:
             if self.state is not None and any(e["type"] == "end" for e in events):
                 final = await self._finish_segment(self._total_ms)
                 if final is not None:
-                    yield final
+                    for message in self._final_messages(final):
+                        yield message
                 continue
 
             cut_msg = await self._maybe_cut_after_piece(self._total_ms)
             if cut_msg is not None:
-                yield cut_msg
+                for message in self._final_messages(cut_msg):
+                    yield message
 
     async def flush(self):
         """收到 stop：冲刷未闭合句出 final。"""
         if self.state is not None:
             final = await self._finish_segment(self._total_ms)
             if final is not None:
-                yield final
+                for message in self._final_messages(final):
+                    yield message
 
     def close(self):
         """释放会话域状态，并使尚未返回的说话人任务失效。"""
@@ -788,6 +954,8 @@ class VllmStreamSession:
         self._clear_state(discard_segment=True)
         self._spk_cluster = None
         self._spk_identity_tracker.clear()
+        self._cluster_identities.clear()
+        self._extra_finals.clear()
 
 
 class VllmStreamBackend:

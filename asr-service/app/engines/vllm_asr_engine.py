@@ -45,7 +45,7 @@ class VLLMASREngine:
         self._chunk_size_sec = clamp_chunk_size_sec(chunk_size_sec)
         self._unfixed_chunk_num = unfixed_chunk_num
         self._unfixed_token_num = unfixed_token_num
-        # 离线词级时间戳用：加载 ForcedAligner（与流式无关，仅 transcribe 用）。
+        # 离线词级时间戳与流式说话人切换定位共用 ForcedAligner。
         # 加载失败时降级为 False（仍可出文本，只是无 words）。
         self._enable_align = enable_align
         # 对齐器设备：cuda（默认，快，但显存在 vLLM 的 gpu_memory_utilization 预算之外，
@@ -147,6 +147,18 @@ class VLLMASREngine:
         """冲刷尾音并收尾，返回 (text, language)。"""
         self._run_streaming(self._model.finish_streaming_transcribe, state)
         return state.text, state.language
+
+    def align_stream_text(self, audio: np.ndarray, text: str, language: str):
+        """复用已加载的对齐器，在定稿前定位说话人切换对应的文字。"""
+        with self._infer_lock:
+            results = self._model.forced_aligner.align(
+                audio=(audio, 16000), text=text, language=language,
+            )
+        return [
+            {"text": item.text, "start": item.start_time, "end": item.end_time}
+            for result in results
+            for item in result.items
+        ]
 
     # ── 离线一次性转写（同步；与流式共用同一 vllm.LLM 与 _infer_lock，故串行）──
     def transcribe(self, audio, language=None, with_words: bool = False):
