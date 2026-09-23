@@ -102,5 +102,16 @@ class RealtimeIdentityTracker:
         state = self._states.get(label)
         return state.confirmed_name if state is not None else None
 
+    def confirmed_identity(self, label: str) -> tuple[str, str] | None:
+        """读取已确认的身份与姓名，不改变连续识别计数。"""
+        state = self._states.get(label)
+        if (
+            state is None
+            or state.confirmed_id is None
+            or state.confirmed_name is None
+        ):
+            return None
+        return state.confirmed_id, state.confirmed_name
+
     def clear(self) -> None:
         self._states.clear()

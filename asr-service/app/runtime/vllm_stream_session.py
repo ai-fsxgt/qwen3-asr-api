@@ -20,7 +20,8 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 import app.config as cfg
-from app.runtime.speaker_cluster import OnlineSpeakerClusterer
+from app.runtime.energy_vad import EnergyVAD
+from app.runtime.speaker_cluster import OnlineSpeakerClusterer, speaker_label
 from app.runtime.speaker_identity import RealtimeIdentityTracker
 from app.utils.audio_resampler import pcm_bytes_to_array, resample_to_16k
 from app.runtime.noise_gate import rms_dbfs
@@ -40,6 +41,12 @@ _TARGET_SR = 16000
 _MIN_AUDIO_FS = 8000
 _MAX_AUDIO_FS = 96000
 CHUNK_SIZE_SEC_RANGE = (0.5, 5.0)      # 与 vllm_asr_engine.clamp_chunk_size_sec 对齐
+_NEW_CLUSTER_MIN_EVIDENCE_MS = 2250    # 两个完整重叠窗覆盖的唯一语音时长
+_PENDING_SPEAKER_MAX_GAP_SEGMENTS = 4
+
+_SPEAKER_VAD = EnergyVAD(
+    energy_floor_dbfs=cfg.VLLM_ENERGY_FLOOR_DBFS,
+)
 
 
 def _is_decoder_prompt_overflow(exc) -> bool:
@@ -83,14 +90,49 @@ class _SegmentAudioBuffer:
         return np.ascontiguousarray(merged[:self._last_active_samples])
 
 
+class _SpeakerEvidence(list):
+    """标记由真实声纹引擎生成的窗口证据，区别于测试替身的段级结果。"""
+
+
 def _embed_speaker_segment(speaker, audio: _SegmentAudioBuffer):
-    """在线程池中合并 PCM 并提取段级 embedding。"""
+    """按离线同款 VAD 滑窗提取实时说话人证据。"""
     wav = audio.to_array()
     if wav.size == 0:
         return None
-    embedding = speaker.embed_realtime_segment(wav)
-    duration_ms = int(wav.size * 1000 / _TARGET_SR)
-    return embedding, duration_ms, wav
+
+    # 自定义/测试引擎若只实现段级接口，仍按一个完整段调用。
+    if not hasattr(speaker, "embed_realtime_windows"):
+        embedding = speaker.embed_realtime_segment(wav)
+        duration_ms = int(wav.size * 1000 / _TARGET_SR)
+        return [(embedding, duration_ms, wav)]
+
+    from app.engines.speaker_embedding_engine import make_windows
+
+    speech_spans = _SPEAKER_VAD.detect_array(wav, _TARGET_SR)
+    windows = [
+        window
+        for start_ms, end_ms in speech_spans
+        for window in make_windows(start_ms / 1000.0, end_ms / 1000.0)
+    ]
+    if not windows:
+        return None
+
+    embeddings = speaker.embed_realtime_windows(wav, windows)
+    evidence = []
+    covered_until = 0.0
+    for (start, end), embedding in zip(windows, embeddings, strict=True):
+        # 重叠窗仅把新增覆盖的音频累计为身份识别证据，避免同一语音重复计时。
+        evidence_start = max(start, covered_until)
+        covered_until = max(covered_until, end)
+        start_sample = max(int(evidence_start * _TARGET_SR), 0)
+        end_sample = min(int(end * _TARGET_SR), wav.size)
+        identity_audio = np.ascontiguousarray(wav[start_sample:end_sample])
+        evidence.append((
+            embedding,
+            int((end - start) * 1000),
+            identity_audio,
+        ))
+    return _SpeakerEvidence(evidence)
 
 
 def _map_speaker_identity(
@@ -190,6 +232,11 @@ class VllmStreamSession:
         self._spk_identity_tracker = RealtimeIdentityTracker(
             cfg.SPEAKER_REALTIME_CONFIRMATIONS
         )
+        self._raw_output_labels: dict[str, str] = {}
+        self._identity_output_labels: dict[str, str] = {}
+        self._output_label_identities: dict[str, str] = {}
+        self._used_output_labels: set[str] = set()
+        self._pending_speaker_groups: list[dict] = []
         self._generation = 0                   # configure/close 后使在途说话人结果失效
 
     def _reset_speaker_options(self):
@@ -288,6 +335,11 @@ class VllmStreamSession:
         self._spk_identity_tracker = RealtimeIdentityTracker(
             cfg.SPEAKER_REALTIME_CONFIRMATIONS
         )
+        self._raw_output_labels = {}
+        self._identity_output_labels = {}
+        self._output_label_identities = {}
+        self._used_output_labels = set()
+        self._pending_speaker_groups = []
         warnings = self._collect_ignored_params(cfg_msg)
         logger.info(f"[vllm-stream] 会话配置 sid={self.sid[:8]} audio_fs={self.audio_fs} "
                     f"language={self.language} chunk={self._chunk_size_sec or '默认'} "
@@ -374,8 +426,7 @@ class VllmStreamSession:
             cfg.SPEAKER_REALTIME_CONFIRMATIONS,
         )
         if not identity_windows:
-            return self._spk_identity_tracker.confirmed_name(label)
-        name = self._spk_identity_tracker.confirmed_name(label)
+            return self._spk_identity_tracker.confirmed_identity(label)
         try:
             for identity_audio in identity_windows:
                 embedding = await self._in_speaker_thread(
@@ -397,11 +448,76 @@ class VllmStreamSession:
                     or cluster is not self._spk_cluster
                 ):
                     return None
-                name = self._spk_identity_tracker.observe(label, match)
+                self._spk_identity_tracker.observe(label, match)
         except Exception as exc:
             logger.warning(f"[vllm-stream] 声纹识别失败，本段仅保留匿名标签: {exc}")
             return None
-        return name
+        return self._spk_identity_tracker.confirmed_identity(label)
+
+    def _next_output_label(self) -> str | None:
+        for index in range(self._spk_max):
+            label = speaker_label(index)
+            if label not in self._used_output_labels:
+                self._used_output_labels.add(label)
+                return label
+        return None
+
+    def _display_label(
+        self,
+        raw_label: str,
+        speaker_id: str | None = None,
+    ) -> str:
+        label = self._raw_output_labels.get(raw_label)
+        if label is None:
+            if raw_label in self._used_output_labels:
+                label = self._next_output_label() or raw_label
+            else:
+                label = raw_label
+                self._used_output_labels.add(label)
+            self._raw_output_labels[raw_label] = label
+        if speaker_id is None:
+            return label
+
+        identity_label = self._identity_output_labels.get(speaker_id)
+        if identity_label is not None:
+            return identity_label
+        owner = self._output_label_identities.get(label)
+        if owner is None or owner == speaker_id:
+            identity_label = label
+        else:
+            identity_label = self._next_output_label() or label
+        self._identity_output_labels[speaker_id] = identity_label
+        self._output_label_identities[identity_label] = speaker_id
+        return identity_label
+
+    def _queue_pending_speaker_evidence(self, item, segment_id: int) -> dict:
+        embedding, duration_ms, _identity_audio = item
+        similarities = [
+            float(group["centroid"] @ embedding)
+            for group in self._pending_speaker_groups
+        ]
+        if similarities and max(similarities) >= self._spk_threshold:
+            index = int(np.argmax(similarities))
+            group = self._pending_speaker_groups[index]
+            merged = (
+                group["centroid"] * group["duration_ms"]
+                + embedding * duration_ms
+            )
+            group["duration_ms"] += duration_ms
+            group["centroid"] = merged / np.linalg.norm(merged)
+        else:
+            group = {
+                "centroid": np.asarray(embedding).copy(),
+                "duration_ms": duration_ms,
+                "items": [],
+                "last_segment_id": segment_id,
+            }
+            if len(self._pending_speaker_groups) >= self._spk_max:
+                self._pending_speaker_groups.pop(0)
+            self._pending_speaker_groups.append(group)
+        group["items"].append((segment_id, item))
+        group["last_segment_id"] = segment_id
+        return group
 
     async def _annotate_final(self, msg, embedded, generation):
         if msg is None or generation != self._generation:
@@ -411,37 +527,97 @@ class VllmStreamSession:
         cluster = self._spk_cluster
         if cluster is None:
             return msg
-        embedding, duration_ms, identity_audio = embedded
+        self._pending_speaker_groups = [
+            group
+            for group in self._pending_speaker_groups
+            if msg["seg_id"] - group["last_segment_id"]
+            <= _PENDING_SPEAKER_MAX_GAP_SEGMENTS
+        ]
+        votes: dict[str, int] = {}
+        touched_groups = []
         try:
-            label = cluster.assign(
-                embedding,
-                duration_ms,
-                identity_audio=(
-                    identity_audio
-                    if self._identify and self._speaker_service is not None
-                    else None
-                ),
-            )
+            for embedding, duration_ms, identity_audio in embedded:
+                if (
+                    isinstance(embedded, _SpeakerEvidence)
+                    and cluster.closest_label(embedding) is None
+                ):
+                    group = self._queue_pending_speaker_evidence(
+                        (embedding, duration_ms, identity_audio),
+                        msg["seg_id"],
+                    )
+                    if not any(existing is group for existing in touched_groups):
+                        touched_groups.append(group)
+                    continue
+                label = cluster.assign(
+                    embedding,
+                    duration_ms,
+                    identity_audio=(
+                        identity_audio
+                        if self._identify and self._speaker_service is not None
+                        else None
+                    ),
+                )
+                if label is not None:
+                    votes[label] = votes.get(label, 0) + duration_ms
+
+            for group in touched_groups:
+                evidence_ms = sum(
+                    len(item[2]) * 1000 / _TARGET_SR
+                    for _segment_id, item in group["items"]
+                )
+                if (
+                    len(group["items"]) < 2
+                    or evidence_ms < max(
+                        self._spk_min_seg_ms,
+                        _NEW_CLUSTER_MIN_EVIDENCE_MS,
+                    )
+                ):
+                    continue
+                label = cluster.create_cluster(group["centroid"])
+                if label is None:
+                    continue
+                for segment_id, item in group["items"]:
+                    embedding, duration_ms, identity_audio = item
+                    cluster.assign_to(
+                        label,
+                        embedding,
+                        duration_ms,
+                        identity_audio=(
+                            identity_audio
+                            if self._identify and self._speaker_service is not None
+                            else None
+                        ),
+                    )
+                    if segment_id == msg["seg_id"]:
+                        votes[label] = votes.get(label, 0) + duration_ms
+                self._pending_speaker_groups = [
+                    pending
+                    for pending in self._pending_speaker_groups
+                    if pending is not group
+                ]
         except Exception as exc:
             logger.warning(f"[vllm-stream] 说话人归簇失败，本段不标注: {exc}")
             return msg
-        if label is None:
+        if not votes:
             return msg
-        msg["speaker"] = label
+        label = max(votes, key=votes.get)
+        identity = None
         if self._identify and self._speaker_service is not None:
             try:
-                name = await self._lookup_speaker_name(
+                identity = await self._lookup_speaker_name(
                     label,
                     cluster,
                     generation,
                 )
             except Exception as exc:
                 logger.warning(f"[vllm-stream] 声纹识别失败，本段仅保留匿名标签: {exc}")
-                name = None
+                identity = None
             if generation != self._generation or cluster is not self._spk_cluster:
                 return None
-            if name is not None:
-                msg["speaker_name"] = name
+        speaker_id, name = identity if identity is not None else (None, None)
+        msg["speaker"] = self._display_label(label, speaker_id)
+        if name is not None:
+            msg["speaker_name"] = name
         return msg
 
     def _overflow_result(self, state, exc):

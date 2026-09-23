@@ -109,6 +109,51 @@ class OnlineSpeakerClusterer:
         )
         return speaker_label(len(self._centroids) - 1)
 
+    def closest_label(self, emb: np.ndarray) -> str | None:
+        """返回达到阈值的最近簇，不改变簇状态。"""
+        similarities = [float(centroid @ emb) for centroid in self._centroids]
+        if not similarities:
+            return None
+        index = int(np.argmax(similarities))
+        if similarities[index] < self._thr:
+            return None
+        return speaker_label(index)
+
+    def create_cluster(self, emb: np.ndarray) -> str | None:
+        """用指定质心创建新簇，观测证据由调用方随后累计。"""
+        if len(self._centroids) >= self._max:
+            return None
+        centroid = np.asarray(emb, dtype=np.float32).copy()
+        norm = float(np.linalg.norm(centroid))
+        if norm > 0:
+            centroid /= norm
+        self._centroids.append(centroid)
+        self._durations_ms.append(0)
+        self._identity_audio.append(np.zeros(0, dtype=np.float32))
+        return speaker_label(len(self._centroids) - 1)
+
+    def assign_to(
+        self,
+        label: str,
+        emb: np.ndarray,
+        dur_ms: int,
+        *,
+        identity_audio: np.ndarray | None = None,
+    ) -> bool:
+        """把观测证据更新到指定簇。"""
+        index = _label_index(label)
+        if not 0 <= index < len(self._centroids):
+            return False
+        duration_ms = max(int(dur_ms), 0)
+        previous_ms = self._durations_ms[index]
+        merged = self._centroids[index] * previous_ms + emb * duration_ms
+        norm = float(np.linalg.norm(merged))
+        if norm > 0:
+            self._centroids[index] = merged / norm
+        self._durations_ms[index] += duration_ms
+        self._add_identity_evidence(index, identity_audio)
+        return True
+
     @property
     def centroids(self) -> list[np.ndarray]:
         return list(self._centroids)

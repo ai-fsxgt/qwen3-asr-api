@@ -240,6 +240,19 @@ class SpeakerEmbeddingEngine:
             cancelled=cancelled,
         )
 
+    def embed_realtime_windows(
+        self,
+        wav: np.ndarray,
+        windows: list[tuple[float, float]],
+    ) -> np.ndarray:
+        """批量提取实时说话人窗口，复用实时优先级与单次批处理推理。"""
+        return self._embed_windows(
+            wav,
+            windows,
+            realtime=True,
+            cancelled=None,
+        )
+
     def embed_identity_clips(
         self,
         clips: Iterable[np.ndarray],
