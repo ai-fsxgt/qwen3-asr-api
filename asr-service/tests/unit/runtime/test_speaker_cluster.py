@@ -1,14 +1,12 @@
 """app/runtime/speaker_cluster.py 单元测试（合成 embedding，不触模型）。
 
-在线：归簇分支（建簇/挂靠/短段/上限）；离线：AHC/谱聚类分支、阈值语义（spike 勘误锁定）、
-小簇并入、近簇合并、首现重排。只测逻辑，不测真实音频精度（实施方案 §4 铁律）。
+覆盖离线 AHC/谱聚类分支、阈值语义、小簇并入、近簇合并和首现重排。
+只测逻辑，不测真实音频精度。
 """
 import numpy as np
-import pytest
 
 from app.runtime.speaker_cluster import (
     CLUSTER_LINE,
-    OnlineSpeakerClusterer,
     _merge_close_clusters,
     cluster_offline,
     speaker_label,
@@ -41,69 +39,6 @@ def test_speaker_label_alphabet_and_overflow():
     assert speaker_label(25) == "Z"
     assert speaker_label(26) == "Z1"
     assert speaker_label(27) == "Z2"
-
-
-# ─── OnlineSpeakerClusterer ───
-
-def test_online_first_segment_creates_a():
-    oc = OnlineSpeakerClusterer(threshold=0.5)
-    assert oc.assign(unit(0), 3000) == "A"
-    assert len(oc.centroids) == 1
-
-
-def test_online_similar_joins_and_updates_centroid():
-    oc = OnlineSpeakerClusterer(threshold=0.5)
-    oc.assign(unit(0), 3000)
-    before = oc.centroid_of("A").copy()
-    assert oc.assign(around(unit(0)), 3000) == "A"
-    assert len(oc.centroids) == 1
-    assert not np.allclose(oc.centroid_of("A"), before)  # 质心已计数加权更新
-    assert np.isclose(np.linalg.norm(oc.centroid_of("A")), 1.0, atol=1e-5)
-
-
-def test_online_dissimilar_creates_new_cluster():
-    oc = OnlineSpeakerClusterer(threshold=0.5)
-    oc.assign(unit(0), 3000)
-    assert oc.assign(unit(1), 3000) == "B"
-    assert len(oc.centroids) == 2
-
-
-def test_online_short_segment_attaches_without_update():
-    oc = OnlineSpeakerClusterer(threshold=0.5, min_seg_ms=1500)
-    assert oc.assign(unit(0), 500) is None  # 无簇可挂靠 → None，且不建簇
-    assert len(oc.centroids) == 0
-    oc.assign(unit(0), 3000)
-    before = oc.centroid_of("A").copy()
-    assert oc.assign(around(unit(0)), 500) == "A"  # 挂靠成功
-    assert np.allclose(oc.centroid_of("A"), before)  # 质心不更新
-    assert oc.duration_sec_of("A") == pytest.approx(3.0)  # 不计入识别证据时长
-    assert oc.assign(unit(1), 500) is None  # 相似度不够 → 不建簇返回 None
-    assert len(oc.centroids) == 1
-
-
-def test_online_max_speakers_keeps_low_confidence_segment_anonymous():
-    oc = OnlineSpeakerClusterer(threshold=0.5, max_speakers=2)
-    oc.assign(unit(0), 3000)
-    oc.assign(unit(1), 3000)
-    label = oc.assign(mix(unit(0), unit(2), 0.4, 0.9), 3000)  # 与 A 最近但低于 τ
-    assert label is None
-    assert len(oc.centroids) == 2  # 不再建簇
-
-
-def test_online_centroid_is_weighted_by_segment_duration():
-    oc = OnlineSpeakerClusterer(threshold=0.0, max_speakers=2)
-    oc.assign(unit(0), 6000)
-    oc.assign(unit(1), 2000)
-    expected = mix(unit(0), unit(1), 6.0, 2.0)
-    assert np.allclose(oc.centroid_of("A"), expected)
-    assert oc.duration_sec_of("A") == pytest.approx(8.0)
-
-
-def test_online_centroid_of_unknown_label():
-    oc = OnlineSpeakerClusterer()
-    oc.assign(unit(0), 3000)
-    assert oc.centroid_of("B") is None
-    assert oc.centroid_of("?") is None
 
 
 # ─── cluster_offline：分支与边界 ───

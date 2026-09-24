@@ -22,17 +22,17 @@ Two layers of capability, both disabled by default and enabled on demand (config
 
 | Layer | Switch | Output |
 |-------|--------|--------|
-| **Speaker diarization** (anonymous) | `enable_speaker` | Offline `segments[].speaker` and top-level `speakers`, real-time `final.speaker` — labels `A`/`B`/`C`… ordered by first time speaking, **scoped to a single file / single session** (same person is not guaranteed to keep the same label across tasks) |
+| **Speaker diarization** (anonymous) | `enable_speaker` | Offline `segments[].speaker` and top-level `speakers` — labels `A`/`B`/`C`… ordered by first time speaking, **scoped to a single file** (same person is not guaranteed to keep the same label across tasks) |
 | **Voiceprint identification** (real name) | `enable_speaker_db` (depends on the layer above + `api_key` must be configured) | With `identify_speakers=true`, speakers are matched against the shared PostgreSQL/pgvector database and matches emit `speaker_name`. `speaker_auto_enroll` is disabled by default; when explicitly enabled, only unmatched offline speakers with enough speech (default ≥10s) are enrolled as `说话人_NN` |
 
 Key points:
 
 - **Failures always degrade gracefully**: a failure in any diarization/identification step only drops the label/real name; the transcription result is unaffected.
-- **Real-time identification follows "latest final wins"**: each cluster queries the voiceprint database with 5-second sliding speech windows that overlap by 50% by default. A name is exposed after two consecutive windows match the same identity, so continuous speech can theoretically be confirmed after about 7.5 seconds (actual timing depends on sentence boundaries). Historical messages are not rewritten, and the real-time path does not auto-enroll.
+- **The realtime path only transcribes text**: it does not run diarization or voiceprint identification. For existing clients, `final.speaker` and `final.speaker_name` are always `null`.
 - `speakers[].speaker_id` is a **pure value snapshot**: it has no association with the task store; after a speaker is deleted, the id in historical tasks dangles (`GET /v2/speakers/{id}` returning 404 means "deleted"), and callers must tolerate this.
 - Consent semantics of auto-enrollment: enabling `speaker_auto_enroll` means the deployer declares that consent for voiceprint enrollment has been obtained from the data subject (the same liability attribution as manual enrollment with `consent=true`).
 
-How transcription carries `identify_speakers`: offline in [Transcription · Submit ASR Task](transcription_EN.md#submit-asr-task), real-time in [Transcription · Client → Server](transcription_EN.md#client--server); the speaker fields in offline results are in [Task Management · Result Structure](tasks_EN.md#result-structure).
+See [Transcription · Submit ASR Task](transcription_EN.md#submit-asr-task) for the offline `identify_speakers` request field and [Task Management · Result Structure](tasks_EN.md#result-structure) for the offline speaker fields.
 
 Offline result example with voiceprint identification (the incremental part of `result`):
 

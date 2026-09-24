@@ -88,16 +88,16 @@ WS /inference
 
 Paraformer realtime（standard 模式需 `--enable-stream`；vLLM 模式 `--serve-mode vllm` 下随 `--enable-dashscope-api` 自动挂载，无需 `--enable-stream`）。ws base = `ws://<host>:8765/compat/dashscope/api-ws/v1`。`header/payload` 信封：
 
-1. 客户端 → `run-task`：`{"header":{"action":"run-task","task_id":"<uuid>","streaming":"duplex"},"payload":{"parameters":{"format":"pcm","sample_rate":16000,"language_hints":["zh"],"diarization_enabled":true}}}`
+1. 客户端 → `run-task`：`{"header":{"action":"run-task","task_id":"<uuid>","streaming":"duplex"},"payload":{"parameters":{"format":"pcm","sample_rate":16000,"language_hints":["zh"]}}}`
 2. 服务端 → `task-started`
 3. 客户端 → 二进制 PCM 帧（~100ms/帧）
-4. 服务端 → 每句 `result-generated`：`payload.output.sentence` 含 `begin_time`/`end_time`(ms)/`text`/`sentence_end:true`/`words[]`；开启分离且本段可判定时另有整型 `speaker_id`（A→0、B→1…）
+4. 服务端 → 每句 `result-generated`：`payload.output.sentence` 含 `begin_time`/`end_time`(ms)/`text`/`sentence_end:true`/`words[]`，并为兼容已有客户端固定返回 `speaker_id:null`
 5. 客户端 → `finish-task` → 服务端 → `task-finished`
 6. 同一连接可再发 `run-task` 起新任务（连接复用）
 
-> `run-task.payload.parameters.diarization_enabled` 会映射为本轮实时说话人分离开关；省略时使用服务端默认。同一连接复用时每轮独立生效，不沿用上一轮设置。
+> 为兼容已有客户端，服务端仍接受实时 `run-task.payload.parameters.diarization_enabled`，但会忽略该参数。
 >
-> **能力与限制**：取决于运行模式——**standard**（VAD-offline）只产整句 `result-generated`（`sentence_end:true`），不产中间结果（`sentence_end:false`）；**vLLM**（`--serve-mode vllm`，原生流式）在句内逐步下发中间 `result-generated`（`sentence_end:false`，累计文本，`begin_time`/`end_time`=null、不带 `words` 或 `speaker_id`），句末再发 `sentence_end:true` 整句。两种模式都只在 final 上给出已稳定的 `speaker_id`；短段或说话人模块未启用时省略该字段。DashScope 中间结果语义本就累计，与 vLLM partial 天然契合、干净直发（非 best-effort）。
+> **能力与限制**：取决于运行模式——**standard**（VAD-offline）只产整句 `result-generated`（`sentence_end:true`），不产中间结果（`sentence_end:false`）；**vLLM**（`--serve-mode vllm`，原生流式）在句内逐步下发中间 `result-generated`（`sentence_end:false`，累计文本，`begin_time`/`end_time`=null、不带 `words` 或 `speaker_id`），句末再发 `sentence_end:true` 整句。两种模式的句末结果都固定包含 `speaker_id:null`，不执行实时说话人处理。DashScope 中间结果语义本就累计，与 vLLM partial 天然契合、干净直发（非 best-effort）。
 
 ---
 

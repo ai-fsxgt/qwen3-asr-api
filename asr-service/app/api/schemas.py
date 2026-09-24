@@ -120,8 +120,8 @@ class StreamCapabilities(BaseModel):
     path: str | None = None           # "/v2/asr/stream"（统一端点）
     partial_results: bool = False
     word_timestamps: bool = False
-    speaker_labels: bool = False      # 实时 final.speaker（匿名 A/B/C…）
-    speaker_identification: bool = False  # 实时 final.speaker_name（声纹库命中时）
+    speaker_labels: bool = False      # 实时链路不处理说话人，恒为 false
+    speaker_identification: bool = False  # 实时链路不做声纹识别，恒为 false
     save_audio: bool = False          # 是否保存实时录音 WAV
     recording_retention_hours: int = 72
     recording_download_path: str | None = None
@@ -130,7 +130,7 @@ class StreamCapabilities(BaseModel):
 class CapabilitiesResponse(BaseModel):
     mode: str                          # "standard" | "vllm"
     offline_api: bool
-    speaker_labels: bool = False       # 说话人分离总开关（离线+实时同一开关）
+    speaker_labels: bool = False       # 离线说话人分离是否可用
     speaker_identification: bool = False   # 声纹库真名识别（enroll/identify 可用）
     stream: StreamCapabilities
     defaults: dict = {}                # 可覆盖参数的当前生效默认值（Web UI 占位提示，反映实际配置）

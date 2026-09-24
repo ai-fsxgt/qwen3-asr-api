@@ -73,19 +73,9 @@ def test_dashscope_result_no_words():
     assert "words" not in ev["payload"]["output"]["sentence"]
 
 
-def test_dashscope_result_maps_final_speaker():
+def test_dashscope_result_keeps_empty_speaker_id():
     ev = final_to_dashscope_result(dict(FINAL, speaker="B"), "t")
-    assert ev["payload"]["output"]["sentence"]["speaker_id"] == 1
-
-
-def test_dashscope_result_maps_extended_speaker_label():
-    ev = final_to_dashscope_result(dict(FINAL, speaker="Z1"), "t")
-    assert ev["payload"]["output"]["sentence"]["speaker_id"] == 26
-
-
-def test_dashscope_result_omits_unknown_speaker():
-    ev = final_to_dashscope_result(dict(FINAL, speaker="unknown"), "t")
-    assert "speaker_id" not in ev["payload"]["output"]["sentence"]
+    assert ev["payload"]["output"]["sentence"]["speaker_id"] is None
 
 
 # ─── R2 增量映射（partial）───

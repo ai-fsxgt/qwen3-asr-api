@@ -126,7 +126,7 @@ GET /v2/capabilities
     "path": "/v2/asr/stream",
     "partial_results": false,
     "word_timestamps": true,
-    "speaker_labels": true,
+    "speaker_labels": false,
     "speaker_identification": false,
     "save_audio": false,
     "recording_retention_hours": 72,
@@ -134,7 +134,7 @@ GET /v2/capabilities
   },
   "defaults": {
     "max_segment": 5, "max_end_silence_ms": 800, "max_segment_sec": 12,
-    "speaker_threshold": 0.5, "speaker_id_threshold": 0.45, "speaker_id_margin": 0.1,
+    "speaker_max": 8, "speaker_id_threshold": 0.45, "speaker_id_margin": 0.1,
     "energy_floor_dbfs": -50.0, "snr_min_db": 6.0
   }
 }
@@ -142,15 +142,15 @@ GET /v2/capabilities
 
 | 字段 | 说明 |
 |------|------|
-| speaker_labels | 说话人分离是否启用（离线 + 实时同一开关） |
+| speaker_labels | 离线说话人分离是否可用 |
 | speaker_identification | 声纹库真名识别是否可用（登记 / 认领 / identify / 转写联动） |
 | stream.enabled | 实时端点是否已挂载；standard 需 `--enable-stream`，vllm 恒为 true |
 | stream.backend | `vad-offline` / `vllm-native` |
 | stream.partial_results | 是否产生中间结果 `partial`（vad-offline 后端为 false） |
 | stream.word_timestamps | `final` 是否带单词级时间戳（随对齐开关） |
-| stream.speaker_labels | 实时 `final` 是否带说话人标签 |
-| stream.speaker_identification | 实时 `final` 是否可在声纹命中时带 `speaker_name` |
+| stream.speaker_labels | 固定为 `false`；实时不执行说话人分离，`final.speaker` 为 `null` |
+| stream.speaker_identification | 固定为 `false`；实时不执行声纹识别，`final.speaker_name` 为 `null` |
 | stream.save_audio | 是否保存实时输入音频为 WAV（默认 false） |
 | stream.recording_retention_hours | 实时录音保留小时数，默认 72；0 表示不自动清理 |
 | stream.recording_download_path | 开启保存时返回下载 / 删除路径模板；未开启时为 `null` |
-| defaults | 可覆盖参数（实时 `start` 字段 / 离线 Form 字段）的当前生效默认值，反映实际配置；Web UI 用于数值框占位提示 |
+| defaults | 离线 Form 字段与实时文字参数的当前生效默认值，反映实际配置；Web UI 用于数值框占位提示 |

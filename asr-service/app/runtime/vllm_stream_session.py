@@ -1,45 +1,40 @@
-"""vLLM 流式活动后端（路线 A）：能量端点断句 + vLLM 原生流式解码。
+"""vLLM 模式实时文字预览：能量端点断句 + 原生流式解码。
 
-实现与 stream_session.py 同一 StreamBackend / session 鸭子接口（被 ws_routes.py 消费）：
-    Backend: .mode / .backend / .capabilities ；async acquire() -> bool ；
-             create_session(sid) -> session ；release(session) ；shutdown()
-    session: configure(dict) -> warnings:list ；feed_audio(bytes) -> async-iter[dict] ；
-             flush() -> async-iter[dict]
-产出信封 dict：{type:"partial",seg_id,text} /
-{type:"final",seg_id,text,start,end,speaker?,speaker_name?}（无 words）。
-
-本模块不 import vLLM/qwen_asr（经 VLLMASREngine 鸭子调用），亦不 import stream_session
-（其顶层依赖 funasr，vLLM 环境不含）。时间戳用累计样本计数；仅在实时说话人
-功能启用时，为当前 UI 分段保留有界 PCM 快照。
+实时链路只输出 partial 和 final 文本，不执行说话人分离和声纹识别。
 """
 import asyncio
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-import numpy as np
-
 import app.config as cfg
-from app.runtime.speaker_cluster import OnlineSpeakerClusterer
-from app.runtime.speaker_identity import RealtimeIdentityTracker
-from app.utils.audio_resampler import pcm_bytes_to_array, resample_to_16k
 from app.runtime.noise_gate import rms_dbfs
-from app.utils.validation import (
-    SPK_ID_MARGIN_RANGE,
-    SPK_ID_THRESHOLD_RANGE,
-    SPK_MAX_RANGE,
-    SPK_MIN_SEG_RANGE,
-    SPK_THRESHOLD_RANGE,
-    coerce_num_in_range,
-    parse_bool,
-)
+from app.utils.audio_resampler import pcm_bytes_to_array, resample_to_16k
+from app.utils.validation import coerce_num_in_range
 
 logger = logging.getLogger(__name__)
 
 _TARGET_SR = 16000
 _MIN_AUDIO_FS = 8000
 _MAX_AUDIO_FS = 96000
-CHUNK_SIZE_SEC_RANGE = (0.5, 5.0)      # 与 vllm_asr_engine.clamp_chunk_size_sec 对齐
+CHUNK_SIZE_SEC_RANGE = (0.5, 5.0)
+
+_UNSUPPORTED_KEYS = (
+    "with_words",
+    "with_punc",
+    "noise_filter",
+    "energy_floor_dbfs",
+    "snr_min_db",
+    "max_end_silence_ms",
+    "max_segment_sec",
+    "identify_speakers",
+    "diarize",
+    "speaker_threshold",
+    "speaker_min_seg_ms",
+    "speaker_max",
+    "speaker_id_threshold",
+    "speaker_id_margin",
+)
 
 
 def _is_decoder_prompt_overflow(exc) -> bool:
@@ -47,87 +42,18 @@ def _is_decoder_prompt_overflow(exc) -> bool:
     return "decoder prompt" in message and "maximum model length" in message
 
 
-# 客户端可能下发、但 vllm 模式仍不支持的参数 → 软提示忽略（不报错）
-_UNSUPPORTED_KEYS = (
-    "with_words", "with_punc",
-    "noise_filter", "energy_floor_dbfs", "snr_min_db",
-    "max_end_silence_ms", "max_segment_sec",
-)
-
-
-class _SegmentAudioBuffer:
-    """当前 UI 分段的有界 PCM 块。
-
-    append 只做一次精确大小拷贝，避免切片长期持有客户端大帧；合并延迟到声纹线程。
-    last_active_samples 用于裁掉端点判停前的尾静音，内部短暂停顿仍完整保留。
-    """
-
-    def __init__(self):
-        self._chunks: list[np.ndarray] = []
-        self._samples = 0
-        self._last_active_samples = 0
-
-    def append(self, arr: np.ndarray, *, active: bool):
-        if arr is None or arr.size == 0:
-            return
-        chunk = np.asarray(arr, dtype=np.float32).copy()
-        self._chunks.append(chunk)
-        self._samples += int(chunk.size)
-        if active:
-            self._last_active_samples = self._samples
-
-    def to_array(self) -> np.ndarray:
-        if self._last_active_samples <= 0:
-            return np.zeros(0, dtype=np.float32)
-        merged = self._chunks[0] if len(self._chunks) == 1 else np.concatenate(self._chunks)
-        return np.ascontiguousarray(merged[:self._last_active_samples])
-
-
-def _embed_speaker_segment(speaker, audio: _SegmentAudioBuffer):
-    """在线程池中合并 PCM 并提取段级 embedding。"""
-    wav = audio.to_array()
-    if wav.size == 0:
-        return None
-    embedding = speaker.embed_realtime_segment(wav)
-    duration_ms = int(wav.size * 1000 / _TARGET_SR)
-    return embedding, duration_ms, wav
-
-
-def _map_speaker_identity(
-    service,
-    label,
-    embedding,
-    duration_sec,
-    threshold,
-    margin,
-):
-    """在线程池中执行同步声纹库查询，返回完整匹配结果。"""
-    mapping = service.map_clusters(
-        [{"label": label, "centroid": embedding, "dur_sec": duration_sec}],
-        id_threshold=threshold,
-        id_margin=margin,
-    )
-    if not mapping or not mapping[0].get("speaker_id"):
-        return None
-    return mapping[0]
-
-
 class EnergyEndpointer:
-    """按帧能量端点：能量越门限→句开始；尾静音累计≥end_silence_ms→句结束。
-
-    每帧 = 一次 process(arr) 的整段 RMS（端点粒度 = 客户端推流块时长）。
-    输入须为 float32 [-1,1)（满量程参考）；与 FSMN-VAD 等价产出 start/end 事件。
-    """
+    """按帧能量判定语音开始，并在尾静音达到阈值时结束当前句。"""
 
     def __init__(self, *, energy_floor_dbfs=-45.0, end_silence_ms=800):
         self._floor = energy_floor_dbfs
-        self._end_sil = end_silence_ms
+        self._end_silence_ms = end_silence_ms
         self.reset()
 
     def reset(self):
         self._in_speech = False
         self._silence_ms = 0
-        self._t_ms = 0          # 会话内累计时间（ms）
+        self._time_ms = 0
 
     @property
     def in_speech(self) -> bool:
@@ -137,116 +63,64 @@ class EnergyEndpointer:
         return rms_dbfs(arr) >= self._floor
 
     def process(self, arr, frame_ms=None) -> list:
-        """返回事件：[{'type':'start','start':ms}] / [{'type':'end','end':ms}] / []。"""
-        dur = int(frame_ms) if frame_ms is not None else int(arr.size * 1000 / _TARGET_SR)
+        duration_ms = (
+            int(frame_ms)
+            if frame_ms is not None
+            else int(arr.size * 1000 / _TARGET_SR)
+        )
         active = self.is_active(arr)
-        events, t0 = [], self._t_ms
-        self._t_ms += dur
+        events = []
+        start_ms = self._time_ms
+        self._time_ms += duration_ms
         if active:
             self._silence_ms = 0
             if not self._in_speech:
                 self._in_speech = True
-                events.append({"type": "start", "start": t0})
+                events.append({"type": "start", "start": start_ms})
         elif self._in_speech:
-            self._silence_ms += dur
-            if self._silence_ms >= self._end_sil:
+            self._silence_ms += duration_ms
+            if self._silence_ms >= self._end_silence_ms:
                 self._in_speech = False
-                events.append({"type": "end", "end": self._t_ms})
+                events.append({"type": "end", "end": self._time_ms})
         return events
 
 
 class VllmStreamSession:
-    """单个 WS 会话：能量端点断句 + vLLM 流式解码 → 句内 partial / 句尾 final。"""
+    """单个 WebSocket 会话：句内输出 partial，句尾输出 final。"""
 
-    def __init__(self, sid, engine, endpointer: EnergyEndpointer, executor, infer_sem,
-                 *, language=None, max_utterance_sec=20, max_state_sec=120,
-                 priority_gate=None, speaker=None, speaker_service=None,
-                 speaker_executor=None):
+    def __init__(
+        self,
+        sid,
+        engine,
+        endpointer: EnergyEndpointer,
+        executor,
+        infer_sem,
+        *,
+        language=None,
+        max_utterance_sec=20,
+        max_state_sec=120,
+        priority_gate=None,
+    ):
         self.sid = sid
         self._engine = engine
         self._endpointer = endpointer
         self._executor = executor
-        self._speaker_executor = speaker_executor or executor
-        self._sem = infer_sem                  # asyncio.Semaphore：限同时解码会话数
+        self._sem = infer_sem
         self._priority_gate = priority_gate
-        self._speaker = speaker                # None = 实时说话人关闭
-        self._speaker_service = speaker_service
         self.language = language
         self._max_utt_samples = max(1, int(max_utterance_sec * _TARGET_SR))
         self._max_state_samples = max(1, int(max_state_sec * _TARGET_SR))
-        self._reset_speaker_options()
-        # 会话态
+
         self.audio_fs = _TARGET_SR
-        self._chunk_size_sec = None            # None=用引擎默认；configure 可按会话覆盖
-        self.state = None                      # 当前 SDK 流式状态（None=无活动语音）
+        self._chunk_size_sec = None
+        self.state = None
         self.seg_id = 0
         self._seg_start_ms = None
-        self._total_ms = 0                     # 会话累计音频时长（ms）
-        self._utt_samples = 0                  # 当前硬分段已喂样本数
-        self._state_samples = 0                # 当前 SDK state 已喂样本数
+        self._total_ms = 0
+        self._utt_samples = 0
+        self._state_samples = 0
         self._last_partial = ""
-        self._segment_audio = None             # 当前硬分段 PCM（仅 diarize 开启时）
-        self._spk_cluster = None               # configure() 时创建，会话级不回溯聚类
-        self._spk_identity_tracker = RealtimeIdentityTracker(
-            cfg.SPEAKER_REALTIME_CONFIRMATIONS
-        )
-        self._generation = 0                   # configure/close 后使在途说话人结果失效
-
-    def _reset_speaker_options(self):
-        self._spk_threshold = cfg.SPEAKER_THRESHOLD
-        self._spk_min_seg_ms = cfg.SPEAKER_MIN_SEG_MS
-        self._spk_max = cfg.SPEAKER_MAX
-        self._spk_id_threshold = cfg.SPEAKER_ID_THRESHOLD
-        self._spk_id_margin = cfg.SPEAKER_ID_MARGIN
-        self._with_diarize = True
-        self._identify = False
-
-    def _apply_speaker_options(self, cfg_msg: dict):
-        st = cfg_msg.get("speaker_threshold")
-        if st is not None:
-            self._spk_threshold = coerce_num_in_range(
-                st, SPK_THRESHOLD_RANGE, "speaker_threshold")
-        ms = cfg_msg.get("speaker_min_seg_ms")
-        if ms is not None:
-            self._spk_min_seg_ms = coerce_num_in_range(
-                ms, SPK_MIN_SEG_RANGE, "speaker_min_seg_ms", cast=int)
-        sx = cfg_msg.get("speaker_max")
-        if sx is not None:
-            self._spk_max = coerce_num_in_range(
-                sx, SPK_MAX_RANGE, "speaker_max", cast=int)
-        it = cfg_msg.get("speaker_id_threshold")
-        if it is not None:
-            self._spk_id_threshold = coerce_num_in_range(
-                it, SPK_ID_THRESHOLD_RANGE, "speaker_id_threshold")
-        im = cfg_msg.get("speaker_id_margin")
-        if im is not None:
-            self._spk_id_margin = coerce_num_in_range(
-                im, SPK_ID_MARGIN_RANGE, "speaker_id_margin")
-        self._with_diarize = parse_bool(
-            cfg_msg.get("diarize"), self._with_diarize, "diarize")
-        self._identify = parse_bool(
-            cfg_msg.get("identify_speakers"), False, "identify_speakers")
-
-    def _collect_ignored_params(self, cfg_msg: dict) -> list[str]:
-        ignored = [k for k in _UNSUPPORTED_KEYS if cfg_msg.get(k) is not None]
-        speaker_ready = self._speaker is not None
-        for key in ("speaker_threshold", "speaker_min_seg_ms", "speaker_max"):
-            if cfg_msg.get(key) is not None and not speaker_ready:
-                ignored.append(key)
-        if cfg_msg.get("diarize") is True and not speaker_ready:
-            ignored.append("diarize")
-
-        identification_ready = (
-            speaker_ready
-            and self._speaker_service is not None
-            and self._with_diarize
-        )
-        for key in ("speaker_id_threshold", "speaker_id_margin"):
-            if cfg_msg.get(key) is not None and not identification_ready:
-                ignored.append(key)
-        if cfg_msg.get("identify_speakers") is True and not identification_ready:
-            ignored.append("identify_speakers")
-        return ignored
+        self._generation = 0
 
     def configure(self, cfg_msg: dict) -> list:
         cfg_msg = cfg_msg or {}
@@ -257,16 +131,19 @@ class VllmStreamSession:
             raise ValueError(f"audio_fs 非法: {raw_fs!r}")
         if not (_MIN_AUDIO_FS <= audio_fs <= _MAX_AUDIO_FS):
             raise ValueError(
-                f"audio_fs 必须在 [{_MIN_AUDIO_FS}, {_MAX_AUDIO_FS}] 范围内，收到 {audio_fs}")
+                f"audio_fs 必须在 [{_MIN_AUDIO_FS}, {_MAX_AUDIO_FS}] 范围内，收到 {audio_fs}"
+            )
         self.audio_fs = audio_fs
         if cfg_msg.get("language") is not None:
             self.language = cfg_msg.get("language")
-        css = cfg_msg.get("chunk_size_sec")
-        if css is not None:                    # 会话级覆盖（D6），越界抛 ValueError → invalid_config
-            self._chunk_size_sec = coerce_num_in_range(css, CHUNK_SIZE_SEC_RANGE, "chunk_size_sec")
-        self._reset_speaker_options()
-        self._apply_speaker_options(cfg_msg)
-        # 重置会话态
+        chunk_size_sec = cfg_msg.get("chunk_size_sec")
+        if chunk_size_sec is not None:
+            self._chunk_size_sec = coerce_num_in_range(
+                chunk_size_sec,
+                CHUNK_SIZE_SEC_RANGE,
+                "chunk_size_sec",
+            )
+
         self._generation += 1
         self._endpointer.reset()
         self.state = None
@@ -276,35 +153,19 @@ class VllmStreamSession:
         self._utt_samples = 0
         self._state_samples = 0
         self._last_partial = ""
-        self._segment_audio = None
-        if self._speaker is not None and self._with_diarize:
-            self._spk_cluster = OnlineSpeakerClusterer(
-                threshold=self._spk_threshold,
-                max_speakers=self._spk_max,
-                min_seg_ms=self._spk_min_seg_ms,
-            )
-        else:
-            self._spk_cluster = None
-        self._spk_identity_tracker = RealtimeIdentityTracker(
-            cfg.SPEAKER_REALTIME_CONFIRMATIONS
+        warnings = [key for key in _UNSUPPORTED_KEYS if cfg_msg.get(key) is not None]
+        logger.info(
+            f"[vllm-stream] 会话配置 sid={self.sid[:8]} audio_fs={self.audio_fs} "
+            f"language={self.language} chunk={self._chunk_size_sec or '默认'} "
+            f"hard_cut={self._max_utt_samples / _TARGET_SR:.0f}s "
+            f"state_cut={self._max_state_samples / _TARGET_SR:.0f}s "
+            f"忽略项={warnings or '无'}"
         )
-        warnings = self._collect_ignored_params(cfg_msg)
-        logger.info(f"[vllm-stream] 会话配置 sid={self.sid[:8]} audio_fs={self.audio_fs} "
-                    f"language={self.language} chunk={self._chunk_size_sec or '默认'} "
-                    f"hard_cut={self._max_utt_samples / _TARGET_SR:.0f}s "
-                    f"state_cut={self._max_state_samples / _TARGET_SR:.0f}s "
-                    f"speaker={'开' if self._spk_cluster is not None else '关'} "
-                    f"identify={'开' if self._identify and self._speaker_service is not None else '关'} "
-                    f"忽略项={warnings or '无'}")
         return warnings
 
     async def _in_thread(self, fn, *args):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, fn, *args)
-
-    async def _in_speaker_thread(self, fn, *args):
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._speaker_executor, fn, *args)
 
     async def _infer(self, fn, *args):
         if self._priority_gate is None:
@@ -318,12 +179,14 @@ class VllmStreamSession:
         self._seg_start_ms = start_ms
         self._utt_samples = 0
         self._last_partial = ""
-        self._segment_audio = (
-            _SegmentAudioBuffer() if self._spk_cluster is not None else None)
 
     async def _begin_segment(self, start_ms):
         if self.state is None:
-            self.state = await self._in_thread(self._engine.new_state, self.language, self._chunk_size_sec)
+            self.state = await self._in_thread(
+                self._engine.new_state,
+                self.language,
+                self._chunk_size_sec,
+            )
             self._state_samples = 0
         self._begin_ui_segment(start_ms)
 
@@ -331,7 +194,6 @@ class VllmStreamSession:
         self._seg_start_ms = None
         self._utt_samples = 0
         self._last_partial = ""
-        self._segment_audio = None
 
     def _clear_state(self, *, discard_segment=False):
         self.state = None
@@ -339,115 +201,25 @@ class VllmStreamSession:
         if discard_segment:
             self._clear_ui_segment()
 
-    def _make_ui_final(self, full_text, start_ms, end_ms):
-        msg = {"type": "final", "seg_id": self.seg_id, "text": full_text or "",
-               "start": int(start_ms or 0), "end": int(end_ms)}
+    def _make_final(self, text, start_ms, end_ms):
+        message = {
+            "type": "final",
+            "seg_id": self.seg_id,
+            "text": text or "",
+            "start": int(start_ms or 0),
+            "end": int(end_ms),
+            "speaker": None,
+            "speaker_name": None,
+        }
         self.seg_id += 1
-        self._last_partial = ""
-        return msg
-
-    def _emit_ui_final(self, full_text, end_ms):
-        audio = self._segment_audio
-        generation = self._generation
-        msg = self._make_ui_final(full_text, self._seg_start_ms, end_ms)
         self._clear_ui_segment()
-        return msg, audio, generation
-
-    async def _embed_segment(self, audio):
-        if audio is None or self._speaker is None:
-            return None
-        try:
-            return await self._in_speaker_thread(
-                _embed_speaker_segment, self._speaker, audio)
-        except Exception as exc:
-            logger.warning(f"[vllm-stream] 说话人 embedding 失败，本段不标注: {exc}")
-            return None
-
-    async def _lookup_speaker_name(self, label, cluster, generation):
-        service = self._speaker_service
-        if service is None:
-            return None
-        identity_windows = cluster.take_identity_audio_windows(
-            label,
-            cfg.SPEAKER_IDENTIFY_MIN_SEC,
-            _TARGET_SR,
-            cfg.SPEAKER_REALTIME_CONFIRMATIONS,
-        )
-        if not identity_windows:
-            return self._spk_identity_tracker.confirmed_name(label)
-        name = self._spk_identity_tracker.confirmed_name(label)
-        try:
-            for identity_audio in identity_windows:
-                embedding = await self._in_speaker_thread(
-                    self._speaker.embed_realtime_identity_segment,
-                    identity_audio,
-                )
-                duration_sec = len(identity_audio) / _TARGET_SR
-                match = await self._in_speaker_thread(
-                    _map_speaker_identity,
-                    service,
-                    label,
-                    embedding,
-                    duration_sec,
-                    self._spk_id_threshold,
-                    self._spk_id_margin,
-                )
-                if (
-                    generation != self._generation
-                    or cluster is not self._spk_cluster
-                ):
-                    return None
-                name = self._spk_identity_tracker.observe(label, match)
-        except Exception as exc:
-            logger.warning(f"[vllm-stream] 声纹识别失败，本段仅保留匿名标签: {exc}")
-            return None
-        return name
-
-    async def _annotate_final(self, msg, embedded, generation):
-        if msg is None or generation != self._generation:
-            return None
-        if embedded is None:
-            return msg
-        cluster = self._spk_cluster
-        if cluster is None:
-            return msg
-        embedding, duration_ms, identity_audio = embedded
-        try:
-            label = cluster.assign(
-                embedding,
-                duration_ms,
-                identity_audio=(
-                    identity_audio
-                    if self._identify and self._speaker_service is not None
-                    else None
-                ),
-            )
-        except Exception as exc:
-            logger.warning(f"[vllm-stream] 说话人归簇失败，本段不标注: {exc}")
-            return msg
-        if label is None:
-            return msg
-        msg["speaker"] = label
-        if self._identify and self._speaker_service is not None:
-            try:
-                name = await self._lookup_speaker_name(
-                    label,
-                    cluster,
-                    generation,
-                )
-            except Exception as exc:
-                logger.warning(f"[vllm-stream] 声纹识别失败，本段仅保留匿名标签: {exc}")
-                name = None
-            if generation != self._generation or cluster is not self._spk_cluster:
-                return None
-            if name is not None:
-                msg["speaker_name"] = name
-        return msg
+        return message
 
     def _overflow_result(self, state, exc):
         logger.warning(
             f"[vllm-stream] SDK state 上下文超限，使用最后有效结果收尾 "
-            f"sid={self.sid[:8]} state={self._state_samples / _TARGET_SR:.1f}s: {exc}")
+            f"sid={self.sid[:8]} state={self._state_samples / _TARGET_SR:.1f}s: {exc}"
+        )
         return getattr(state, "text", ""), getattr(state, "language", None)
 
     async def _finish_state(self, state):
@@ -460,42 +232,36 @@ class VllmStreamSession:
 
     async def _finish_segment(self, end_ms, *, overflow=None):
         generation = self._generation
-        audio = self._segment_audio
         state = self.state
         try:
-            if overflow is None:
-                finish_result, embedded = await asyncio.gather(
-                    self._finish_state(state),
-                    self._embed_segment(audio),
-                )
-            else:
-                finish_result = self._overflow_result(state, overflow)
-                embedded = await self._embed_segment(audio)
+            result = (
+                await self._finish_state(state)
+                if overflow is None
+                else self._overflow_result(state, overflow)
+            )
         except Exception:
             if generation == self._generation:
                 self._clear_state(discard_segment=True)
             raise
         if generation != self._generation:
             return None
-        text, _ = finish_result
+        text, _language = result
+        message = None
         if self._seg_start_ms is None:
-            logger.info(f"[vllm-stream] 关闭 SDK state，无前端分段输出 sid={self.sid[:8]} end={end_ms}ms")
-            final = None
+            logger.info(
+                f"[vllm-stream] 关闭 SDK state，无前端分段输出 "
+                f"sid={self.sid[:8]} end={end_ms}ms"
+            )
         else:
-            final = self._emit_ui_final(text, end_ms)
+            message = self._make_final(text, self._seg_start_ms, end_ms)
         self._clear_state()
-        if final is None:
-            return None
-        msg, _, final_generation = final
-        return await self._annotate_final(msg, embedded, final_generation)
+        return message
 
-    async def _feed_piece(self, arr, *, active):
-        text, _ = await self._infer(self._engine.feed, arr, self.state)
+    async def _feed_piece(self, arr):
+        text, _language = await self._infer(self._engine.feed, arr, self.state)
         self._state_samples += arr.size
         if self._seg_start_ms is None:
             return None
-        if self._segment_audio is not None:
-            self._segment_audio.append(arr, active=active)
         self._utt_samples += arr.size
         if text and text != self._last_partial:
             self._last_partial = text
@@ -524,10 +290,17 @@ class VllmStreamSession:
         if self.state is None:
             return None
         if self._state_samples >= self._max_state_samples:
-            logger.info(f"[vllm-stream] SDK state 到期重建 sid={self.sid[:8]} end={end_ms}ms")
+            logger.info(
+                f"[vllm-stream] SDK state 到期重建 sid={self.sid[:8]} end={end_ms}ms"
+            )
             return await self._finish_segment(end_ms)
-        if self._seg_start_ms is not None and self._utt_samples >= self._max_utt_samples:
-            logger.info(f"[vllm-stream] 连续语音硬分段 sid={self.sid[:8]} end={end_ms}ms")
+        if (
+            self._seg_start_ms is not None
+            and self._utt_samples >= self._max_utt_samples
+        ):
+            logger.info(
+                f"[vllm-stream] 连续语音硬分段 sid={self.sid[:8]} end={end_ms}ms"
+            )
             return await self._finish_segment(end_ms)
         return None
 
@@ -540,13 +313,13 @@ class VllmStreamSession:
 
         offset = 0
         while offset < arr.size:
-            n = self._next_piece_samples(arr.size - offset)
-            piece = arr[offset: offset + n]
-            dur_ms = int(piece.size * 1000 / _TARGET_SR)
+            piece_size = self._next_piece_samples(arr.size - offset)
+            piece = arr[offset: offset + piece_size]
+            duration_ms = int(piece.size * 1000 / _TARGET_SR)
             active = self._endpointer.is_active(piece)
-            events = self._endpointer.process(piece, frame_ms=dur_ms)
+            events = self._endpointer.process(piece, frame_ms=duration_ms)
 
-            start_events = [e for e in events if e["type"] == "start"]
+            start_events = [event for event in events if event["type"] == "start"]
             if start_events:
                 await self._ensure_active_state(start_events[0]["start"])
             elif active and self._seg_start_ms is None:
@@ -555,30 +328,28 @@ class VllmStreamSession:
             if self.state is not None:
                 generation = self._generation
                 try:
-                    partial = await self._feed_piece(piece, active=active)
+                    partial = await self._feed_piece(piece)
                 except Exception as exc:
                     if generation != self._generation:
                         return
                     if not _is_decoder_prompt_overflow(exc):
                         self._clear_state(discard_segment=True)
                         raise
-                    final = await self._finish_segment(
-                        self._total_ms, overflow=exc)
+                    final = await self._finish_segment(self._total_ms, overflow=exc)
                     if final is not None:
                         yield final
-                    # 丢弃已污染的旧 state，把当前块在全新 state 中只重放一次。
                     if active and generation == self._generation:
                         await self._ensure_active_state(self._total_ms)
                         try:
-                            partial = await self._feed_piece(
-                                piece, active=True)
+                            partial = await self._feed_piece(piece)
                         except Exception as retry_exc:
                             self._clear_state(discard_segment=True)
                             if not _is_decoder_prompt_overflow(retry_exc):
                                 raise
                             logger.error(
                                 f"[vllm-stream] 全新 SDK state 仍上下文超限，"
-                                f"丢弃当前音频块 sid={self.sid[:8]}: {retry_exc}")
+                                f"丢弃当前音频块 sid={self.sid[:8]}: {retry_exc}"
+                            )
                         else:
                             if partial is not None:
                                 yield partial
@@ -586,62 +357,61 @@ class VllmStreamSession:
                     if partial is not None:
                         yield partial
 
-            self._total_ms += dur_ms
+            self._total_ms += duration_ms
             offset += piece.size
 
-            if self.state is not None and any(e["type"] == "end" for e in events):
+            if self.state is not None and any(
+                event["type"] == "end" for event in events
+            ):
                 final = await self._finish_segment(self._total_ms)
                 if final is not None:
                     yield final
                 continue
 
-            cut_msg = await self._maybe_cut_after_piece(self._total_ms)
-            if cut_msg is not None:
-                yield cut_msg
+            final = await self._maybe_cut_after_piece(self._total_ms)
+            if final is not None:
+                yield final
 
     async def flush(self):
-        """收到 stop：冲刷未闭合句出 final。"""
         if self.state is not None:
             final = await self._finish_segment(self._total_ms)
             if final is not None:
                 yield final
 
     def close(self):
-        """释放会话域状态，并使尚未返回的说话人任务失效。"""
         self._generation += 1
         self._clear_state(discard_segment=True)
-        self._spk_cluster = None
-        self._spk_identity_tracker.clear()
 
 
 class VllmStreamBackend:
-    """路线 A 活动后端：能量端点 + vLLM 原生流式。实现 StreamBackend 接口。
-
-    与 VadOfflineBackend（stream_session.py）结构同构，差异仅 session 类型与 capabilities。
-    """
+    """vLLM 模式实时文字预览后端。"""
 
     mode = "vllm"
     backend = "vllm-native"
 
-    def __init__(self, engine, *, max_sessions=16, concurrency=1, max_utterance_sec=20,
-                 max_state_sec=120, energy_floor_dbfs=-45.0, end_silence_ms=800,
-                 priority_gate=None, speaker=None, speaker_service=None):
+    def __init__(
+        self,
+        engine,
+        *,
+        max_sessions=16,
+        concurrency=1,
+        max_utterance_sec=20,
+        max_state_sec=120,
+        energy_floor_dbfs=-45.0,
+        end_silence_ms=800,
+        priority_gate=None,
+    ):
         self._engine = engine
-        self._speaker = speaker
-        self._speaker_service = speaker_service
         self._max_sessions = max_sessions
         self._max_utterance_sec = max_utterance_sec
         self._max_state_sec = max_state_sec
         self._energy_floor_dbfs = energy_floor_dbfs
         self._end_silence_ms = end_silence_ms
         self._priority_gate = priority_gate
-        # generate 由引擎 _infer_lock 串行；此信号量限同时在飞解码的会话数（默认 1）
         self._sem = asyncio.Semaphore(concurrency)
         self._executor = ThreadPoolExecutor(
-            max_workers=max(2, concurrency + 1), thread_name_prefix="vllm-asr")
-        self._speaker_executor = (
-            ThreadPoolExecutor(max_workers=2, thread_name_prefix="vllm-speaker")
-            if speaker is not None else None
+            max_workers=max(2, concurrency + 1),
+            thread_name_prefix="vllm-asr",
         )
         self._active = 0
         self._count_lock = threading.Lock()
@@ -649,11 +419,10 @@ class VllmStreamBackend:
             "partial_results": True,
             "word_timestamps": False,
             "languages_auto": True,
-            "speaker_labels": speaker is not None,
-            "speaker_identification": (
-                speaker is not None and speaker_service is not None),
+            "speaker_labels": False,
+            "speaker_identification": False,
             "noise_filter_tunable": False,
-            "speaker_tunable": speaker is not None,
+            "speaker_tunable": False,
             "endpoint_tunable": False,
             "output_toggles": False,
         }
@@ -663,27 +432,29 @@ class VllmStreamBackend:
             if self._active >= self._max_sessions:
                 return False
             self._active += 1
-            return True
+        return True
 
     def create_session(self, sid) -> VllmStreamSession:
         endpointer = EnergyEndpointer(
-            energy_floor_dbfs=self._energy_floor_dbfs, end_silence_ms=self._end_silence_ms)
+            energy_floor_dbfs=self._energy_floor_dbfs,
+            end_silence_ms=self._end_silence_ms,
+        )
         return VllmStreamSession(
-            sid, self._engine, endpointer, self._executor, self._sem,
-            max_utterance_sec=self._max_utterance_sec, max_state_sec=self._max_state_sec,
-            priority_gate=self._priority_gate, speaker=self._speaker,
-            speaker_service=self._speaker_service,
-            speaker_executor=self._speaker_executor)
+            sid,
+            self._engine,
+            endpointer,
+            self._executor,
+            self._sem,
+            max_utterance_sec=self._max_utterance_sec,
+            max_state_sec=self._max_state_sec,
+            priority_gate=self._priority_gate,
+        )
 
     def release(self, session):
-        try:
-            if session is not None:
-                session.close()
-        finally:
-            with self._count_lock:
-                self._active = max(0, self._active - 1)
+        if session is not None:
+            session.close()
+        with self._count_lock:
+            self._active = max(0, self._active - 1)
 
     def shutdown(self):
-        if self._speaker_executor is not None:
-            self._speaker_executor.shutdown(wait=True, cancel_futures=True)
         self._executor.shutdown(wait=False, cancel_futures=True)

@@ -77,6 +77,7 @@ docker run -d --gpus all -p 8765:8765 \
 | [Deployment Guide](docs/deployment_EN.md) | System requirements, Linux / Docker deployment, operation modes, Web UI, graceful shutdown |
 | [Configuration Reference](docs/configuration_EN.md) | Full startup-parameter table, config.yaml, environment variables, task persistence, built-in constants |
 | [vLLM vs Standard](docs/vllm-vs-standard_EN.md) | Feature differences of the vLLM engine vs the default standard mode (selection & upgrade guide) |
+| [Third-Party Client Integration Handoff](docs/第三方客户端实时预览与离线定稿适配交接_EN.md) | Realtime preview, offline finalization, reconnect handling, task recovery, and speaker-result migration contract |
 | [API Reference v2 (default)](docs/api/v2_EN.md) | Offline batch processing, health / capabilities, real-time WebSocket protocol |
 | [API Reference v1 (legacy)](docs/api/v1_EN.md) | Legacy-client compatibility notes and versioning conventions |
 | [Compatibility APIs](docs/api/compat_EN.md) | OpenAI / Alibaba Cloud DashScope drop-in compatibility (offline + realtime), just change base_url |

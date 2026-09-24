@@ -60,11 +60,11 @@ enable_task_store: true     # 任务结果跨重启可查（data/tasks.db）；�
 # task_retention_days: 7    # 过期任务清理窗口（天，启动时执行；0 = 永不清理）
 
 # ── 说话人分离 ──
-enable_speaker: false       # 离线 segment.speaker / 实时 final.speaker（匿名 A/B/C…；ReDimNet2-B6）
+enable_speaker: false       # 离线 segments[].speaker（匿名 A/B/C…；ReDimNet2-B6）
 # 启用前请将 b6-vb2+vox2+cnc2_v0-lm.pt 放入 models/speaker/redimnet2-b6/
-# speaker_threshold: 0.5    # 实时在线归簇余弦阈值；更换模型后需用实际数据重新标定
-# speaker_max: 8            # 说话人数上限（实时硬上限；离线谱聚类簇数搜索上界）
-# speaker_min_seg_ms: 1500  # 实时短段门槛（毫秒）：短于此不建新簇/不更新质心
+# speaker_threshold: 0.5    # 兼容保留；实时链路不再使用
+# speaker_max: 8            # 离线谱聚类说话人数搜索上界
+# speaker_min_seg_ms: 1500  # 兼容保留；实时链路不再使用
 # speaker_max_windows: 4000 # 离线滑窗数上限（超长音频抽稀）
 
 # ── 声纹库（登记 + 真名识别）──
@@ -75,7 +75,7 @@ speaker_id_margin: 0.08         # top1-top2 margin（近邻打架判 unknown，�
 speaker_identify_min_sec: 5.0   # 每个滑动识别窗口的有效语音（秒）
 speaker_enroll_min_sec: 3.0     # 手动登记单样本最短有效语音（VAD 后，秒）
 speaker_auto_enroll_min_sec: 10.0  # 自动登记的簇最短语音总时长（秒）
-speaker_realtime_confirmations: 2 # 连续 2 个滑动窗口命中同一身份后展示姓名
+speaker_realtime_confirmations: 2 # 兼容保留；实时链路不再使用
 speaker_store_audio: false      # 留存登记样本音频（扩大合规面）
 speaker_auto_enroll: false       # 离线识别未命中簇自动以「说话人_NN」登记（开启=部署方声明已获数据主体同意）
 

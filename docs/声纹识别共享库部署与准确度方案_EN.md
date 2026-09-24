@@ -54,7 +54,6 @@ Configure both services with:
 enable_speaker: true
 enable_speaker_db: true
 speaker_identify_min_sec: 5.0
-speaker_realtime_confirmations: 2
 speaker_id_threshold: 0.45
 speaker_id_margin: 0.10
 speaker_auto_enroll: false
@@ -67,22 +66,24 @@ password in `config.yaml`.
 
 ## 4. Accuracy Guards
 
+- The realtime path does not run speaker diarization or voiceprint identification;
+  the following rules apply only to offline transcription and voiceprint-management APIs.
 - Manual enrollment accepts one template and recommends at least three without
   making them mandatory.
-- Real-time identification queries the database with 5-second sliding speech windows
-  that overlap by 50% by default.
-- A real-time name is exposed after two consecutive windows match the same identity,
-  so continuous speech can theoretically be confirmed after about 7.5 seconds; actual
-  timing depends on sentence boundaries.
-- Each real-time window is embedded again from raw PCM with ReDimNet2; the running
-  cluster centroid is not reused for identity lookups.
-- Low-confidence segments remain anonymous after the maximum speaker count is reached.
+- Offline identification queries the database with 5-second effective-speech windows
+  that overlap by 50% by default. ReDimNet2 extracts each window from the original PCM
+  intervals assigned to that diarization cluster.
+- An offline cluster receives a name only when its matched windows agree on one identity
+  and their matched speech duration exceeds half of the total evidence duration.
+  Inconsistent identities or insufficient support remain anonymous.
+- After offline diarization reaches the maximum speaker count, low-confidence segments
+  remain anonymous instead of being forced onto the nearest speaker.
 - Offline clusters shorter than 5 seconds remain anonymous.
 - Identification is rejected when top1 is below `speaker_id_threshold` or the
   top1-top2 gap is below `speaker_id_margin`.
 - Unknown speakers are not auto-enrolled by default.
-- Identification audits record duration, top1, top2, margin, and rejection reason
-  for later threshold calibration.
+- Offline identification audits record evidence count, support ratio, duration, top1,
+  top2, margin, and rejection reason for later threshold calibration.
 
 ## 5. Manual Migration from SQLite
 

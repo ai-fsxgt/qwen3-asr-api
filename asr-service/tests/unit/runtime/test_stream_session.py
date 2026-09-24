@@ -41,16 +41,16 @@ def _pcm_ms(ms, sr=16000):
 
 
 def _make_session(svad, *, enable_words=False, punc=None, max_segment_sec=30,
-                  asr_result=None, speaker=None, speaker_service=None,
-                  identify=False):
+                  asr_result=None):
     asr = MagicMock()
     asr.transcribe_array.return_value = asr_result or [types.SimpleNamespace(text="hi")]
     executor = ThreadPoolExecutor(max_workers=2)
     sem = asyncio.Semaphore(1)
-    s = StreamSession("sid", svad, asr, punc, executor, sem,
-                      enable_words=enable_words, max_segment_sec=max_segment_sec,
-                      speaker=speaker, speaker_service=speaker_service)
-    s.configure({"audio_fs": 16000, "identify_speakers": identify})
+    s = StreamSession(
+        "sid", svad, asr, punc, executor, sem,
+        enable_words=enable_words, max_segment_sec=max_segment_sec,
+    )
+    s.configure({"audio_fs": 16000})
     return s, asr, executor
 
 
@@ -71,6 +71,8 @@ async def test_complete_event_emits_final():
         assert m["text"] == "hi"
         assert m["start"] == 0 and m["end"] == 1000
         assert "words" not in m
+        assert m["speaker"] is None
+        assert m["speaker_name"] is None
     finally:
         ex.shutdown(wait=False)
 
@@ -260,6 +262,8 @@ def test_backend_capabilities_reflect_align():
     asr_aligned.align_enabled = True
     b1 = VadOfflineBackend(asr_aligned, vad, None)
     assert b1.capabilities["word_timestamps"] is True
+    assert b1.capabilities["speaker_labels"] is False
+    assert b1.capabilities["speaker_identification"] is False
     b1.shutdown()
 
     asr_plain = MagicMock()
@@ -371,284 +375,3 @@ def test_audio_buffer_drop_all_then_append():
     buf.append(np.ones(1600, dtype=np.float32))
     assert buf.end_ms == 200
     assert buf.slice_ms(100, 200).shape[0] == 1600
-
-
-# ─── 说话人分离（fake speaker engine，不触真模型）───
-
-class FakeSpeakerEngine:
-    """按调用序号返回脚本化 embedding（默认恒为说话人 0）。"""
-
-    def __init__(self, vec_indices=None):
-        self.vec_indices = vec_indices or []
-        self.calls = 0
-
-    def embed_segment(self, seg):
-        i = self.vec_indices[self.calls] if self.calls < len(self.vec_indices) else 0
-        self.calls += 1
-        v = np.zeros(192, dtype=np.float32)
-        v[i] = 1.0
-        return v
-
-    def embed_realtime_segment(self, seg):
-        return self.embed_segment(seg)
-
-    def embed_realtime_identity_segment(self, seg):
-        return self.embed_segment(seg)
-
-
-class BoomSpeakerEngine:
-    def embed_realtime_segment(self, seg):
-        raise RuntimeError("speaker boom")
-
-
-async def test_final_carries_speaker_label():
-    svad = FakeSVAD(events_by_call={
-        0: [{"type": "complete", "start": 0, "end": 3000}],
-        1: [{"type": "complete", "start": 3000, "end": 6000}],
-    })
-    s, asr, ex = _make_session(svad, speaker=FakeSpeakerEngine(vec_indices=[0, 1]))
-    try:
-        m0 = await _collect(s.feed_audio(_pcm_ms(3000)))
-        m1 = await _collect(s.feed_audio(_pcm_ms(3000)))
-        assert m0[0]["speaker"] == "A"
-        assert m1[0]["speaker"] == "B"      # 不相似 → 新说话人
-    finally:
-        ex.shutdown(wait=False)
-
-
-async def test_same_speaker_keeps_label():
-    svad = FakeSVAD(events_by_call={
-        0: [{"type": "complete", "start": 0, "end": 3000}],
-        1: [{"type": "complete", "start": 3000, "end": 6000}],
-    })
-    s, asr, ex = _make_session(svad, speaker=FakeSpeakerEngine())  # 恒同一向量
-    try:
-        m0 = await _collect(s.feed_audio(_pcm_ms(3000)))
-        m1 = await _collect(s.feed_audio(_pcm_ms(3000)))
-        assert m0[0]["speaker"] == "A" and m1[0]["speaker"] == "A"
-    finally:
-        ex.shutdown(wait=False)
-
-
-async def test_speaker_engine_failure_degrades():
-    svad = FakeSVAD(events_by_call={0: [{"type": "complete", "start": 0, "end": 3000}]})
-    s, asr, ex = _make_session(svad, speaker=BoomSpeakerEngine())
-    try:
-        msgs = await _collect(s.feed_audio(_pcm_ms(3000)))
-        assert len(msgs) == 1                # final 正常产出
-        assert msgs[0]["text"] == "hi"
-        assert "speaker" not in msgs[0]      # 仅丢标签
-    finally:
-        ex.shutdown(wait=False)
-
-
-async def test_no_speaker_engine_no_field():
-    svad = FakeSVAD(events_by_call={0: [{"type": "complete", "start": 0, "end": 3000}]})
-    s, asr, ex = _make_session(svad)         # 未注入
-    try:
-        msgs = await _collect(s.feed_audio(_pcm_ms(3000)))
-        assert "speaker" not in msgs[0]
-    finally:
-        ex.shutdown(wait=False)
-
-
-async def test_short_segment_unlabeled_when_no_cluster():
-    # 首段 < SPEAKER_MIN_SEG_MS（默认 1500）：无簇可挂靠 → 不标注、不建簇
-    svad = FakeSVAD(events_by_call={0: [{"type": "complete", "start": 0, "end": 1000}]})
-    s, asr, ex = _make_session(svad, speaker=FakeSpeakerEngine())
-    try:
-        msgs = await _collect(s.feed_audio(_pcm_ms(1000)))
-        assert "speaker" not in msgs[0]
-        assert len(s._spk_cluster.centroids) == 0
-    finally:
-        ex.shutdown(wait=False)
-
-
-async def test_configure_resets_cluster_state():
-    svad = FakeSVAD(events_by_call={
-        0: [{"type": "complete", "start": 0, "end": 3000}],
-        1: [{"type": "complete", "start": 0, "end": 3000}],
-    })
-    s, asr, ex = _make_session(svad, speaker=FakeSpeakerEngine(vec_indices=[0, 1]))
-    try:
-        await _collect(s.feed_audio(_pcm_ms(3000)))
-        s.configure({"audio_fs": 16000})     # 重新配置 → 质心状态清零
-        msgs = await _collect(s.feed_audio(_pcm_ms(3000)))
-        assert msgs[0]["speaker"] == "A"     # 不同向量仍是 A（新会话首位说话人）
-    finally:
-        ex.shutdown(wait=False)
-
-
-def test_backend_speaker_capability_and_release():
-    vad = VADEngine()
-    vad._model = MagicMock()
-    asr = MagicMock()
-    asr.align_enabled = False
-
-    b_on = VadOfflineBackend(asr, vad, None, speaker=FakeSpeakerEngine())
-    assert b_on.capabilities["speaker_labels"] is True
-    sess = b_on.create_session("x")
-    sess.configure({"audio_fs": 16000})
-    assert sess._spk_cluster is not None
-    b_on.release(sess)
-    assert sess._spk_cluster is None         # 会话域状态随释放清空
-    b_on.shutdown()
-
-    b_off = VadOfflineBackend(asr, vad, None)
-    assert b_off.capabilities["speaker_labels"] is False
-    sess2 = b_off.create_session("y")
-    sess2.configure({"audio_fs": 16000})
-    assert sess2._spk_cluster is None
-    b_off.shutdown()
-
-
-# ─── 声纹识别联动（fake SpeakerService）───
-
-class FakeSpeakerService:
-    """按调用序号返回脚本化识别结果（None=unknown）。"""
-
-    def __init__(self, names=("张三",)):
-        self.names = list(names)
-        self.calls = 0
-
-    def map_clusters(self, clusters, *, id_threshold=None, id_margin=None):
-        name = self.names[self.calls] if self.calls < len(self.names) else self.names[-1]
-        self.calls += 1
-        if name is None:
-            return [{"label": clusters[0]["label"], "speaker_id": None,
-                     "name": None, "score": None}]
-        return [{"label": clusters[0]["label"], "speaker_id": "x" * 32,
-                 "name": name, "score": 0.6}]
-
-
-def _speaker_finals_svad(count=8):
-    return FakeSVAD(events_by_call={
-        index: [{
-            "type": "complete",
-            "start": index * 3000,
-            "end": (index + 1) * 3000,
-        }]
-        for index in range(count)
-    })
-
-
-async def test_final_carries_speaker_name():
-    service = FakeSpeakerService()
-    s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
-                               speaker_service=service, identify=True)
-    try:
-        finals = []
-        for _ in range(4):
-            finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
-        assert [msg["speaker"] for msg in finals] == ["A"] * 4
-        assert all("speaker_name" not in msg for msg in finals[:2])
-        assert all(msg["speaker_name"] == "张三" for msg in finals[2:])
-    finally:
-        ex.shutdown(wait=False)
-
-
-async def test_shared_store_is_queried_for_each_sliding_evidence_window():
-    """每形成一个新的 5 秒滑动证据窗口才直查共享库。"""
-    service = FakeSpeakerService()
-    s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
-                               speaker_service=service, identify=True)
-    try:
-        finals = []
-        for _ in range(4):
-            finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
-        assert service.calls == 3
-        assert all("speaker_name" not in msg for msg in finals[:2])
-        assert all(msg["speaker_name"] == "张三" for msg in finals[2:])
-    finally:
-        ex.shutdown(wait=False)
-
-
-async def test_unknown_then_hit_progression():
-    """早期 unknown → 后续两个滑动窗口命中后展示姓名。"""
-    service = FakeSpeakerService(names=(None, "张三", "张三"))
-    s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
-                               speaker_service=service, identify=True)
-    try:
-        finals = []
-        for _ in range(6):
-            finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
-        assert all("speaker_name" not in msg for msg in finals[:3])
-        assert all(msg["speaker_name"] == "张三" for msg in finals[3:])
-    finally:
-        ex.shutdown(wait=False)
-
-
-async def test_two_unknown_results_revoke_confirmed_name():
-    service = FakeSpeakerService(names=("张三", "张三", None, None))
-    s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
-                               speaker_service=service, identify=True)
-    try:
-        finals = []
-        for _ in range(8):
-            finals.extend(await _collect(s.feed_audio(_pcm_ms(3000))))
-        assert service.calls == 7
-        assert all("speaker_name" not in msg for msg in finals[:2])
-        assert all(msg["speaker_name"] == "张三" for msg in finals[2:4])
-        assert all("speaker_name" not in msg for msg in finals[4:])
-    finally:
-        ex.shutdown(wait=False)
-
-
-async def test_identify_off_no_name_no_query():
-    service = FakeSpeakerService()
-    s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
-                               speaker_service=service, identify=False)
-    try:
-        msgs = await _collect(s.feed_audio(_pcm_ms(3000)))
-        assert "speaker_name" not in msgs[0]
-        assert service.calls == 0
-    finally:
-        ex.shutdown(wait=False)
-
-
-async def test_identify_without_service_no_name():
-    s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
-                               identify=True)           # 未注入 service
-    try:
-        msgs = await _collect(s.feed_audio(_pcm_ms(3000)))
-        assert msgs[0]["speaker"] == "A"
-        assert "speaker_name" not in msgs[0]
-        assert s._spk_cluster._identity_audio[0].size == 0
-    finally:
-        ex.shutdown(wait=False)
-
-
-async def test_identify_service_error_degrades():
-    class BoomService:
-        def map_clusters(self, clusters, *, id_threshold=None, id_margin=None):
-            raise RuntimeError("db boom")
-
-    s, asr, ex = _make_session(_speaker_finals_svad(), speaker=FakeSpeakerEngine(),
-                               speaker_service=BoomService(), identify=True)
-    try:
-        msgs = await _collect(s.feed_audio(_pcm_ms(3000)))
-        assert msgs[0]["speaker"] == "A"                 # 匿名标签不受影响
-        assert "speaker_name" not in msgs[0]
-    finally:
-        ex.shutdown(wait=False)
-
-
-def test_backend_speaker_identification_capability():
-    vad = VADEngine()
-    vad._model = MagicMock()
-    asr = MagicMock()
-    asr.align_enabled = False
-
-    b = VadOfflineBackend(asr, vad, None, speaker=FakeSpeakerEngine(),
-                          speaker_service=FakeSpeakerService())
-    assert b.capabilities["speaker_identification"] is True
-    b.shutdown()
-
-    b2 = VadOfflineBackend(asr, vad, None, speaker=FakeSpeakerEngine())
-    assert b2.capabilities["speaker_identification"] is False
-    b2.shutdown()
-
-    # 仅 service 无 speaker 引擎：识别不可用（依赖分离标签）
-    b3 = VadOfflineBackend(asr, vad, None, speaker_service=FakeSpeakerService())
-    assert b3.capabilities["speaker_identification"] is False
-    b3.shutdown()

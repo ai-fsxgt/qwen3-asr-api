@@ -533,9 +533,8 @@ def _assemble_standard(app: FastAPI, args) -> None:
             "path": "/v2/asr/stream" if stream_enabled else None,
             "partial_results": False,
             "word_timestamps": enable_align if stream_enabled else False,
-            "speaker_labels": speaker_enabled if stream_enabled else False,
-            "speaker_identification": (
-                speaker_db_enabled if stream_enabled else False),
+            "speaker_labels": False,
+            "speaker_identification": False,
             "save_audio": bool(stream_enabled and stream_recording_manager.enabled),
             "recording_retention_hours": cfg.STREAM_RECORDING_RETENTION_HOURS,
             "recording_download_path": (
@@ -543,18 +542,15 @@ def _assemble_standard(app: FastAPI, args) -> None:
                 if stream_enabled and stream_recording_manager.enabled else None
             ),
         },
-        # 可覆盖参数的当前生效默认值（反映实际配置，供 Web UI 占位提示）
+        # 离线与实时文字参数的当前生效默认值（供 Web UI 占位提示）
         "defaults": {
             "max_segment": cfg.MAX_SEGMENT_DURATION,
             "max_end_silence_ms": cfg.VAD_MAX_SILENCE,
             "max_segment_sec": cfg.STREAM_MAX_SEGMENT_SEC,
-            "speaker_threshold": cfg.SPEAKER_THRESHOLD,
-            "speaker_min_seg_ms": cfg.SPEAKER_MIN_SEG_MS,
             "speaker_max": cfg.SPEAKER_MAX,
             "speaker_id_threshold": cfg.SPEAKER_ID_THRESHOLD,
             "speaker_id_margin": cfg.SPEAKER_ID_MARGIN,
             "speaker_identify_min_sec": cfg.SPEAKER_IDENTIFY_MIN_SEC,
-            "speaker_realtime_confirmations": cfg.SPEAKER_REALTIME_CONFIRMATIONS,
             "energy_floor_dbfs": cfg.STREAM_ENERGY_FLOOR_DBFS,
             "snr_min_db": cfg.STREAM_SNR_MIN_DB,
         },
@@ -603,8 +599,6 @@ def _assemble_standard(app: FastAPI, args) -> None:
         from app.runtime.stream_session import VadOfflineBackend
         stream_backend = VadOfflineBackend(
             asr_engine, vad_engine, punc_engine,
-            speaker=speaker_engine,
-            speaker_service=linked_speaker_service,
             max_sessions=cfg.MAX_STREAM_SESSIONS,
             asr_concurrency=cfg.STREAM_ASR_CONCURRENCY,
             max_segment_sec=cfg.STREAM_MAX_SEGMENT_SEC,
@@ -793,8 +787,6 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         energy_floor_dbfs=cfg.VLLM_ENERGY_FLOOR_DBFS,
         end_silence_ms=cfg.VLLM_END_SILENCE_MS,
         priority_gate=realtime_priority_gate,
-        speaker=speaker_engine,
-        speaker_service=linked_speaker_service,
     )
     stream_recording_manager = _init_stream_recording_manager()
     init_ws_stream(stream_backend)
@@ -855,9 +847,8 @@ def _assemble_vllm(app: FastAPI, args) -> None:
             "path": "/v2/asr/stream",
             "partial_results": True,
             "word_timestamps": False,
-            "speaker_labels": stream_backend.capabilities["speaker_labels"],
-            "speaker_identification": (
-                stream_backend.capabilities["speaker_identification"]),
+            "speaker_labels": False,
+            "speaker_identification": False,
             "save_audio": stream_recording_manager.enabled,
             "recording_retention_hours": cfg.STREAM_RECORDING_RETENTION_HOURS,
             "recording_download_path": (
@@ -869,13 +860,10 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         "defaults": {
             "max_segment": cfg.MAX_SEGMENT_DURATION,
             "segment_gap_ms": cfg.VLLM_SEGMENT_GAP_MS,
-            "speaker_threshold": cfg.SPEAKER_THRESHOLD,
-            "speaker_min_seg_ms": cfg.SPEAKER_MIN_SEG_MS,
             "speaker_max": cfg.SPEAKER_MAX,
             "speaker_id_threshold": cfg.SPEAKER_ID_THRESHOLD,
             "speaker_id_margin": cfg.SPEAKER_ID_MARGIN,
             "speaker_identify_min_sec": cfg.SPEAKER_IDENTIFY_MIN_SEC,
-            "speaker_realtime_confirmations": cfg.SPEAKER_REALTIME_CONFIRMATIONS,
         },
         # 兼容接口（Phase 3）：据 --enable-openai-api/--enable-dashscope-api 实挂；vLLM 流式恒开，
         # 实时兼容随离线开关一并挂（无需 --enable-stream）。realtime_partial=R2 已下发增量

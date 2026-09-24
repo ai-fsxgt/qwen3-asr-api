@@ -69,7 +69,7 @@ curl -X POST http://127.0.0.1:8765/v2/asr \
 WS /v2/asr/stream
 ```
 
-**前置条件**：`standard` 模式需启用实时（`--enable-stream` 或配置 `enable_stream: true`）；`vllm` 模式实时端点恒开，无需该开关。可先 [`GET /v2/capabilities`](basics.md#能力查询) 预检 `stream.enabled`、`stream.backend` 和说话人能力。
+**前置条件**：`standard` 模式需启用实时（`--enable-stream` 或配置 `enable_stream: true`）；`vllm` 模式实时端点恒开，无需该开关。可先 [`GET /v2/capabilities`](basics.md#能力查询) 预检 `stream.enabled` 和 `stream.backend`。
 
 > 浏览器测试页：启动加 `--web` 后访问 `/web-ui/stream`（支持麦克风与音频文件模拟推流）。
 
@@ -110,23 +110,15 @@ WS /v2/asr/stream
 | language | null | 语言代码，null 为自动检测 |
 | wav_name | "stream" | 会话名（展示用） |
 | recording_id | null | 可选。断线续录时传服务端上次返回的 `recording_id`；若原 WAV 仍存在则追加，若已删除或过期清理则用该 ID 新建 |
-| identify_speakers | false | 对说话人标签做声纹识别（需 `session.created.capabilities.speaker_identification=true`） |
 | noise_filter | 服务端默认 | 本会话覆盖远场段级过滤开关（需 `capabilities.noise_filter_tunable=true`；当前仅 standard） |
 | energy_floor_dbfs | 服务端默认 | 本会话覆盖绝对能量门（dBFS），范围 `[-90, 0]`（当前仅 standard） |
 | snr_min_db | 服务端默认 | 本会话覆盖自适应信噪比门（dB），范围 `[0, 40]`，`0`=关闭该门（当前仅 standard） |
-| speaker_threshold | 服务端默认 | 在线归簇余弦阈值，范围 `[0.2, 0.9]`（需 `capabilities.speaker_labels=true`） |
-| speaker_min_seg_ms | 服务端默认 | 短段门槛（毫秒），范围 `[0, 10000]` |
-| speaker_max | 服务端默认 | 说话人数上限，范围 `[1, 50]` |
-| speaker_id_threshold | 服务端默认 | 声纹识别阈，范围 `[0, 1]`（需 `capabilities.speaker_identification=true`） |
-| speaker_id_margin | 服务端默认 | 声纹 top1-top2 margin，范围 `[0, 1]` |
 | max_end_silence_ms | 服务端默认 | standard 断句尾静音（毫秒），范围 `[200, 2000]`：调小出字更快、易切碎；调大不打断、出字慢 |
 | max_segment_sec | 服务端默认 | standard 长句兜底切分（秒），范围 `[1, 60]` |
-| diarize | 服务端默认 | 关闭本会话说话人分离（standard / vllm 均支持；不能开启服务端未加载的模型） |
 | with_punc / with_words | 服务端默认 | standard 输出降级开关；vllm 的标点由模型原生输出且实时无词级时间戳，因此会软提示忽略 |
 
 > **范围钳制与软提示**：以上覆盖仅影响本会话；数值越界 / 类型错误 → `invalid_config`（致命）。
-> 参数合法但对应功能未启用（如 `diarize:true` 但服务端未加载说话人引擎）→ 不报错，
-> 服务端在 `start` 后补发一条非致命 `error`（`code="params_ignored"`, `fatal=false`），`message` 列出被忽略项。
+> 旧客户端发送 `diarize`、`identify_speakers` 或 `speaker_*` 字段时，服务端会忽略这些字段，不会启动实时说话人处理。
 > VAD 灵敏度 `vad_speech_noise_thres` 受 FunASR 限制为服务端全局配置，不支持按会话调整。
 > vllm 的端点门限和长句切分为服务端级配置；请求 standard 专属字段时同样通过 `params_ignored` 明示降级。
 
@@ -140,17 +132,17 @@ WS /v2/asr/stream
 
 | type | 字段 | 说明 |
 |------|------|------|
-| `session.created` | `protocol`("qwen3-asr-stream") / `protocol_version`("1.0") / `mode` / `backend` / `sample_rate` / `capabilities` / `limits` | 连接建立即下发；`capabilities` 含 `partial_results` / `word_timestamps` / `languages_auto` / `speaker_labels` / `speaker_identification`，以及可调声明 `noise_filter_tunable` / `speaker_tunable` / `endpoint_tunable` / `output_toggles`（标示对应覆盖项本会话是否可调）；`limits` 含 `max_frame_bytes` / `max_backlog_bytes`，超实时推流的客户端应据此控速（参考 `final.end` 反馈的处理进度，保持未处理积压低于上限） |
+| `session.created` | `protocol`("qwen3-asr-stream") / `protocol_version`("1.0") / `mode` / `backend` / `sample_rate` / `capabilities` / `limits` | 连接建立即下发；`capabilities` 含 `partial_results` / `word_timestamps` / `languages_auto`，以及可调声明 `noise_filter_tunable` / `endpoint_tunable` / `output_toggles`；兼容保留的 `speaker_labels` / `speaker_identification` / `speaker_tunable` 固定为 `false`；`limits` 含 `max_frame_bytes` / `max_backlog_bytes`，超实时推流的客户端应据此控速（参考 `final.end` 反馈的处理进度，保持未处理积压低于上限） |
 | `recording.created` | `recording_id` / `wav_name` / `resumed` | 仅开启 `stream_save_audio` 时出现，在 `start` 校验成功后下发；客户端可用 `recording_id` 下载或删除本次保存的 WAV 录音；`resumed=true` 表示本次正在续写已有 WAV，`resumed=false` 表示新建录音 |
-| `partial` | `seg_id` / `text` | 中间结果（仅 `partial_results=true` 的后端，vad-offline 不产生）；标签未稳定，因此不带说话人 |
-| `final` | `seg_id` / `text` / `start` / `end` / `words` / `speaker` / `speaker_name` | 句级定稿结果；`start`/`end` 为毫秒；`words` 仅 `word_timestamps=true` 时存在；`speaker`（匿名标签 A/B/C…）仅 `speaker_labels=true` 且本段达到短段门槛、可判定时存在；`speaker_name` 仅 `identify_speakers=true` 且声纹命中时存在。说话人只随当前 final 下发，不回改历史消息（语义见[说话人管理](speakers.md#说话人分离与声纹识别)） |
+| `partial` | `seg_id` / `text` | 中间结果（仅 `partial_results=true` 的后端，vad-offline 不产生） |
+| `final` | `seg_id` / `text` / `start` / `end` / `words` / `speaker` / `speaker_name` | 句级定稿结果；`start`/`end` 为毫秒；`words` 仅 `word_timestamps=true` 时存在。为兼容已有客户端，每条 `final` 固定包含 `speaker: null` 和 `speaker_name: null`；实时链路不执行说话人分离或声纹识别 |
 | `error` | `code` / `message` / `seg_id` / `fatal` | `fatal=true` 后会话终止 |
 | `session.closed` | `reason` | 会话结束 |
 
 `final` 示例：
 
 ```json
-{"type": "final", "seg_id": 0, "text": "甚至出现交易几乎停滞的情况。", "start": 320, "end": 3520, "words": null}
+{"type": "final", "seg_id": 0, "text": "甚至出现交易几乎停滞的情况。", "start": 320, "end": 3520, "words": null, "speaker": null, "speaker_name": null}
 ```
 
 ### 实时录音下载 / 删除

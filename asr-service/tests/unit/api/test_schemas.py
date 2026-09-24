@@ -165,8 +165,9 @@ def test_final_msg_speaker_field():
     from app.api.ws_schemas import FinalMsg
     m = FinalMsg(seg_id=0, text="你好")
     assert m.speaker is None
-    assert "speaker" in FinalMsg(seg_id=0, text="你好", speaker="A").model_dump()
-    assert FinalMsg(seg_id=0, text="你好", speaker="A").speaker == "A"
+    assert m.speaker_name is None
+    assert m.model_dump()["speaker"] is None
+    assert m.model_dump()["speaker_name"] is None
 
 
 def test_identify_response_source():

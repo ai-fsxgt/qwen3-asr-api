@@ -162,9 +162,9 @@ STREAM_SNR_MIN_DB = 6.0             # 自适应信噪比门（dB）：段相对�
 # ─── 说话人分离 ───
 
 ENABLE_SPEAKER = False          # 总开关（--enable-speaker，由 main.py argparse 覆盖）
-SPEAKER_THRESHOLD = 0.5         # 实时在线归簇余弦阈值；更换模型后需用实际数据重新标定
-SPEAKER_MAX = 8                 # 说话人数上限（实时硬上限；离线为谱聚类簇数搜索上界）
-SPEAKER_MIN_SEG_MS = 1500       # 短于此的段不建新簇/不更新质心
+SPEAKER_THRESHOLD = 0.5         # 兼容保留；实时链路不再使用
+SPEAKER_MAX = 8                 # 离线谱聚类簇数搜索上界
+SPEAKER_MIN_SEG_MS = 1500       # 兼容保留；实时链路不再使用
 SPEAKER_MAX_WINDOWS = 4000      # 离线滑窗数上限，超出均匀抽稀（谱聚类 N² 内存防护）
 
 # ─── 声纹库 ───
@@ -174,7 +174,7 @@ SPEAKER_DATABASE_URL = os.environ.get("SPEAKER_DATABASE_URL", "")
 SPEAKER_ID_THRESHOLD = 0.45         # 1:N 开集识别阈 τ_id；向量迁移后需用实际数据重新标定
 SPEAKER_ID_MARGIN = 0.10            # top1-top2 margin δ（近邻打架时宁缺勿错）
 SPEAKER_IDENTIFY_MIN_SEC = 5.0      # 单个滑动识别窗口的有效语音（秒）
-SPEAKER_REALTIME_CONFIRMATIONS = 2  # 实时连续滑动窗口命中同一身份所需次数
+SPEAKER_REALTIME_CONFIRMATIONS = 2  # 兼容保留；实时链路不再使用
 SPEAKER_ENROLL_MIN_SEC = 3.0        # 手动登记单样本最短有效语音（VAD 后，秒）
 SPEAKER_AUTO_ENROLL = False         # 默认禁止把未知说话人自动写入生物识别库
 SPEAKER_AUTO_ENROLL_MIN_SEC = 10.0  # 自动登记的簇最短语音总时长（严于手动登记）
