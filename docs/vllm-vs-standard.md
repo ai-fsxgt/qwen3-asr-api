@@ -64,7 +64,7 @@
 | 离线 `/v2/asr` | ✅ | ✅（同契约） |
 | 分段 | FSMN-VAD 精分段 | 标点优先（词级时间戳定位） |
 | 标点 | CT-Transformer（可单独关） | 模型原生（恒有，不可单独关） |
-| 说话人分离 / 识别 | ✅（FSMN-VAD + ReDimNet2-B6；实时 final） | ✅（能量端点 + ReDimNet2-B6；实时 final） |
+| 说话人分离 / 识别 | ✅ 仅离线（FSMN-VAD + ReDimNet2-B6） | ✅ 仅离线（能量检测 + ReDimNet2-B6） |
 | 兼容离线（OpenAI/DashScope） | ✅ | ✅ |
 | 兼容实时——整句 | ✅（需 `--enable-stream`） | ✅（随兼容开关，无需 `--enable-stream`） |
 | 兼容实时——逐字/中间增量 | ❌ | ✅ DashScope 中间结果 / OpenAI delta(best-effort) |
@@ -124,7 +124,7 @@
 ## 7. 已知取舍与限制
 
 - **仅 GPU**：vLLM 模式不支持 CPU，亦无 CPU 容器。
-- **质量取舍**：分段（标点优先 / 词间隙）与说话人语音区间（能量检测）弱于 standard 的 FSMN；标点不可单独关。需要更精细的边界和独立标点控制时优先使用 standard。
+- **质量取舍**：分段（标点优先 / 词间隙）与离线说话人语音区间（能量检测）弱于 standard 的 FSMN；标点不可单独关。需要更精细的边界和独立标点控制时优先使用 standard。
 - **OpenAI 实时 delta 为 best-effort**：协议要求增量片段而 vLLM partial 为累计可修订，修订帧跳过，权威全文以 `completed` 为准。
 - **并发**：进程内同步推理，`workers=1`、`concurrency` 提高无吞吐收益。
 
