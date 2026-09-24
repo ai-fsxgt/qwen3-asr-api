@@ -371,32 +371,28 @@ ARG_SPECS = (
     ArgSpec(
         key="enable_speaker", flags=("--enable-speaker",), default=False, type=bool,
         group="说话人分离",
-        help="说话人分离：离线 segment.speaker / 实时 final.speaker（匿名 A/B/C…）",
-        help_en="Speaker diarization: offline segment.speaker / realtime final.speaker "
-                "(anonymous A/B/C…)",
+        help="离线说话人分离：输出 segment.speaker（匿名 A/B/C…）",
+        help_en="Offline speaker diarization: emits segment.speaker (anonymous A/B/C…)",
         negative_flags=("--no-speaker",), negative_help="关闭说话人分离（覆盖配置文件）",
         negative_help_en="Disable speaker diarization (overrides config file)",
     ),
     ArgSpec(
         key="speaker_threshold", flags=("--speaker-threshold",), default=0.5, type=float,
         group="说话人分离",
-        help="实时在线归簇余弦阈值，换模型后需用实际数据重新标定 (default: 0.5)",
-        help_en="Realtime online clustering cosine threshold; recalibrate with "
-                "real data after changing models (default: 0.5)",
+        help="兼容保留参数；实时链路不再使用 (default: 0.5)",
+        help_en="Compatibility-only option; no longer used by realtime (default: 0.5)",
     ),
     ArgSpec(
         key="speaker_max", flags=("--speaker-max",), default=8, type=int,
         group="说话人分离",
-        help="说话人数上限：实时硬上限，离线谱聚类簇数搜索上界 (default: 8)",
-        help_en="Max speakers: hard cap for realtime, upper search bound for offline "
-                "spectral clustering (default: 8)",
+        help="离线谱聚类说话人数搜索上界 (default: 8)",
+        help_en="Upper speaker-count search bound for offline spectral clustering (default: 8)",
     ),
     ArgSpec(
         key="speaker_min_seg_ms", flags=("--speaker-min-seg-ms",), default=1500, type=int,
         group="说话人分离",
-        help="实时短段门槛（毫秒）：短于此不建新簇/不更新质心 (default: 1500)",
-        help_en="Realtime short-segment threshold (ms): below this, no new cluster / "
-                "no centroid update (default: 1500)",
+        help="兼容保留参数；实时链路不再使用 (default: 1500)",
+        help_en="Compatibility-only option; no longer used by realtime (default: 1500)",
     ),
     ArgSpec(
         key="speaker_max_windows", flags=("--speaker-max-windows",), default=4000, type=int,

@@ -126,7 +126,7 @@ Returns the current serving mode and capability declaration (clients can use it 
     "path": "/v2/asr/stream",
     "partial_results": false,
     "word_timestamps": true,
-    "speaker_labels": true,
+    "speaker_labels": false,
     "speaker_identification": false,
     "save_audio": false,
     "recording_retention_hours": 72,
@@ -134,7 +134,7 @@ Returns the current serving mode and capability declaration (clients can use it 
   },
   "defaults": {
     "max_segment": 5, "max_end_silence_ms": 800, "max_segment_sec": 12,
-    "speaker_threshold": 0.5, "speaker_id_threshold": 0.45, "speaker_id_margin": 0.1,
+    "speaker_max": 8, "speaker_id_threshold": 0.45, "speaker_id_margin": 0.1,
     "energy_floor_dbfs": -50.0, "snr_min_db": 6.0
   }
 }
@@ -142,15 +142,15 @@ Returns the current serving mode and capability declaration (clients can use it 
 
 | Field | Description |
 |-------|-------------|
-| speaker_labels | Whether speaker diarization is enabled (offline and real-time share the same switch) |
+| speaker_labels | Whether offline speaker diarization is available |
 | speaker_identification | Whether voiceprint real-name identification is available (enrollment / claiming / identify / transcription integration) |
 | stream.enabled | Whether the real-time endpoint is mounted; standard requires `--enable-stream`, while vllm is always true |
 | stream.backend | `vad-offline` / `vllm-native` |
 | stream.partial_results | Whether intermediate `partial` results are produced (false for vad-offline) |
 | stream.word_timestamps | Whether `final` carries word-level timestamps (follows the alignment switch) |
-| stream.speaker_labels | Whether real-time `final` carries speaker labels |
-| stream.speaker_identification | Whether real-time `final` may carry `speaker_name` when a voiceprint matches |
+| stream.speaker_labels | Always `false`; realtime does not run diarization and `final.speaker` is `null` |
+| stream.speaker_identification | Always `false`; realtime does not run voiceprint identification and `final.speaker_name` is `null` |
 | stream.save_audio | Whether real-time input audio is saved as WAV (default false) |
 | stream.recording_retention_hours | Real-time recording retention in hours, default 72; 0 disables auto cleanup |
 | stream.recording_download_path | Download/delete path template when saving is enabled; `null` when disabled |
-| defaults | Current effective defaults of the overridable params (real-time `start` fields / offline Form fields), reflecting actual config; used by the Web UI for input placeholders |
+| defaults | Current effective defaults for offline Form fields and realtime text options; used by the Web UI as input placeholders |

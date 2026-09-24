@@ -36,8 +36,8 @@
   - **长音频逐块转写**（见 2.5）。
 
 ### 2.3 说话人分离 / 识别
-- 说话人能力（`--enable-speaker` / 声纹库 `--enable-speaker-db`）在**两种模式的离线与实时链路都支持**：实时仅在句级 `final` 输出匿名 `speaker`，声纹命中时再输出 `speaker_name`；未稳定的短段可不带标签，`partial` 永远不带说话人。
-- vLLM 模式使用 ReDimNet2-B6 声纹引擎（GPU），离线语音区间和实时断句都使用能量检测替代 FSMN-VAD（依赖中性、不引 funasr，边界较粗）。实时在句末对该句音频提取一次 embedding 并在线归簇，不会阻塞或回改已经下发的 partial。
+- 说话人能力（`--enable-speaker` / 声纹库 `--enable-speaker-db`）仅用于两种模式的**离线链路**，输出 `segments[].speaker`、`speaker_name` 和顶层 `speakers`。
+- 实时链路只输出文字；为兼容已有客户端，句级 `final` 保留 `speaker` 和 `speaker_name` 字段，但两者固定为 `null`。
 
 ### 2.4 兼容接口（OpenAI / DashScope）
 - 离线兼容（OpenAI `audio/transcriptions`、DashScope 录音文件识别）**两模式都支持**。

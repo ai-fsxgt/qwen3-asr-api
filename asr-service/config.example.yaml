@@ -60,11 +60,11 @@ enable_task_store: true     # 任务结果跨重启可查（data/tasks.db）；�
 # task_retention_days: 7    # 过期任务清理窗口（天，启动时执行；0 = 永不清理）
 
 # ── 说话人分离 ──
-enable_speaker: false       # 离线 segment.speaker / 实时 final.speaker（匿名 A/B/C…；ReDimNet2-B6）
+enable_speaker: false       # 离线 segments[].speaker（匿名 A/B/C…；ReDimNet2-B6）
 # 启用前请将 b6-vb2+vox2+cnc2_v0-lm.pt 放入 models/speaker/redimnet2-b6/
-# speaker_threshold: 0.5    # 实时在线归簇余弦阈值；更换模型后需用实际数据重新标定
-# speaker_max: 8            # 说话人数上限（实时硬上限；离线谱聚类簇数搜索上界）
-# speaker_min_seg_ms: 1500  # 实时短段门槛（毫秒）：短于此不建新簇/不更新质心
+# speaker_threshold: 0.5    # 兼容保留；实时链路不再使用
+# speaker_max: 8            # 离线谱聚类说话人数搜索上界
+# speaker_min_seg_ms: 1500  # 兼容保留；实时链路不再使用
 # speaker_max_windows: 4000 # 离线滑窗数上限（超长音频抽稀）
 
 # ── 声纹库（登记 + 真名识别）──

@@ -36,8 +36,8 @@
   - **Long-audio chunked transcription** (see 2.5).
 
 ### 2.3 Speaker diarization / identification
-- Speaker capabilities (`--enable-speaker` / voiceprint DB `--enable-speaker-db`) are **supported by both offline and realtime paths in both modes**: realtime emits anonymous `speaker` only on sentence-level `final` events and adds `speaker_name` when a voiceprint matches; unstable short segments may remain unlabeled, and `partial` never carries a speaker.
-- vLLM uses the ReDimNet2-B6 voiceprint engine on GPU and replaces FSMN-VAD with energy detection for offline speech regions and realtime endpointing (dependency-neutral, no funasr, coarser boundaries). At sentence end, realtime extracts one embedding for that sentence and clusters it online; it never blocks or revises already-emitted partials.
+- Speaker capabilities (`--enable-speaker` / voiceprint DB `--enable-speaker-db`) apply only to the **offline path** in both modes, producing `segments[].speaker`, `speaker_name`, and top-level `speakers`.
+- The realtime path emits text only. For existing clients, sentence-level `final` events retain `speaker` and `speaker_name`, but both fields are always `null`.
 
 ### 2.4 Compatibility APIs (OpenAI / DashScope)
 - Offline compatibility (OpenAI `audio/transcriptions`, DashScope recorded-file recognition) is **supported in both modes**.

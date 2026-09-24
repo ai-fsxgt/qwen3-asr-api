@@ -275,9 +275,6 @@ def final_to_dashscope_result(final: dict, task_id: str) -> dict:
         "text": final.get("text", ""),
         "sentence_end": True,
     }
-    speaker_id = _speaker_to_int(final.get("speaker"))
-    if speaker_id is not None:
-        sentence["speaker_id"] = speaker_id
     words = _realtime_words_ms(final)
     if words:
         sentence["words"] = words

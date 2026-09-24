@@ -23,10 +23,12 @@ for arg in "$@"; do
   esac
 done
 
-# 1. 建 venv + 装依赖（幂等：venv 存在即跳过）
+# 1. 建 venv + 装依赖（幂等：依赖完整时跳过）
 if [ ! -x "$PYBIN" ]; then
   echo "[e2e] 创建独立 venv: $VENV"
   python3 -m venv "$VENV"
+fi
+if ! "$PYBIN" -c "import fastapi, openai, dashscope" 2>/dev/null; then
   "$PYBIN" -m pip install -q --upgrade pip
   echo "[e2e] 安装依赖 (scripts/e2e/requirements.txt) ..."
   "$PYBIN" -m pip install -q -r "$HERE/requirements.txt"
@@ -38,7 +40,7 @@ trap cleanup EXIT
 
 ARGS=("$@")
 if [ "$USE_MOCK" -eq 1 ]; then
-  echo "[e2e] 启动 mock 服务 :$PORT（无真模型）"
+  echo "[e2e] 启动 mock 服务 :${PORT}（无真模型）"
   PYTHONPATH="$ASR_ROOT" "$PYBIN" "$HERE/mock_server.py" --port "$PORT" &
   SRV_PID=$!
   # 等端口就绪（最多 ~15s）

@@ -375,6 +375,8 @@ class StreamSession:
             "text": text,
             "start": int(start_ms),
             "end": int(end_ms),
+            "speaker": None,
+            "speaker_name": None,
         }
         if self._enable_words and self._with_words:
             words = extract_words(result, int(start_ms) / 1000.0)

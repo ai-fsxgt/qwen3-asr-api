@@ -121,10 +121,10 @@ volumes:
 
 | 参数 | 取值 | 默认值 | 说明 |
 |------|------|--------|------|
-| `--enable-speaker` / `--no-speaker` | - | 关闭 | 说话人分离：离线 `segments[].speaker` / 实时 `final.speaker`（匿名 A/B/C…）；ReDimNet2-B6 权重需手动放入 `models/speaker/redimnet2-b6/`，standard 跟随服务设备，vLLM 使用 GPU |
-| `--speaker-threshold` | 0–1 | `0.5` | 实时在线归簇余弦阈值；调高更易分人、调低更易并人，换模型后需用实际数据重新标定 |
-| `--speaker-max` | 数字 | `8` | 说话人数上限（实时硬上限；离线谱聚类簇数搜索上界） |
-| `--speaker-min-seg-ms` | 毫秒 | `1500` | 实时短段门槛：短于此的段不建新簇/不更新质心（声纹特征在 ≥1.5s 才稳定） |
+| `--enable-speaker` / `--no-speaker` | - | 关闭 | 离线说话人分离，输出 `segments[].speaker`（匿名 A/B/C…）；ReDimNet2-B6 权重需手动放入 `models/speaker/redimnet2-b6/`，standard 跟随服务设备，vLLM 使用 GPU |
+| `--speaker-threshold` | 0–1 | `0.5` | 兼容保留参数；实时链路不再使用 |
+| `--speaker-max` | 数字 | `8` | 离线谱聚类说话人数搜索上界 |
+| `--speaker-min-seg-ms` | 毫秒 | `1500` | 兼容保留参数；实时链路不再使用 |
 | `--speaker-max-windows` | 数字 | `4000` | 离线滑窗数上限，超出均匀抽稀（超长音频聚类内存防护） |
 
 ### 声纹库
@@ -291,7 +291,7 @@ export SPEAKER_DATABASE_URL='postgresql://qwen3_asr:强密码@数据库IP:5432/q
 | 接口 | 离线 v1/v2 + 实时 WS（`--enable-stream`） | **离线 v1/v2 + 实时 WS `/v2/asr/stream`（恒开）** + `/health` `/capabilities` |
 | 增量结果（实时） | 无（按段 final） | **有 partial→final** |
 | 词级时间戳 | 支持 | **离线支持**（ForcedAligner，默认开）；实时不支持 |
-| 说话人分离/识别 | 支持 | **离线 + 实时 final 支持**（ReDimNet2-B6，需 `--enable-speaker`；能量检测分段）；partial 不带说话人 |
+| 说话人分离/识别 | 支持 | **仅离线支持**（ReDimNet2-B6，需 `--enable-speaker`）；实时 `final` 的说话人字段固定为 `null` |
 | 标点 | CT-Transformer（可关） | 模型原生（**不可单独关**） |
 | 离线分段边界 | FSMN-VAD | 标点优先 / 整文兜底（边界较粗） |
 | 设备 | GPU / CPU | **仅 CUDA GPU**（直接禁用 CPU，无 CPU 容器） |
@@ -306,12 +306,12 @@ export SPEAKER_DATABASE_URL='postgresql://qwen3_asr:强密码@数据库IP:5432/q
 - **词级时间戳**：`--vllm-enable-align`（默认开）经 ForcedAligner 产出，与 standard 同款；`--no-vllm-align` 可关以省显存。
   - ⚠️ **长音频对齐 OOM**：对齐器是主进程内的独立 transformers 模型，其显存**不计入 `gpu_memory_utilization`**（该参数只约束 vLLM EngineCore 子进程）。`transcribe` 内部按 ≤180s 切块，但默认（`max_inference_batch_size=-1`）会把一个文件的**全部块一次性**喂对齐器前向——长音频（如 30 分钟≈10 块）激活叠加即 `CUDA out of memory`（短音频只 1 块、不受影响）。对策（按推荐序）：① **`--vllm-infer-batch-size`**（默认已改为 `4`）逐批对齐，峰值显存随批大小线性下降，仍在 GPU、最快；长音频仍 OOM 则降到 `1`；② `--vllm-align-device cpu` 把对齐器移到 CPU（无 GPU 争用，稳但慢）；③ 降 `--gpu-memory-utilization` 留更多 GPU 余量；④ `--no-vllm-align` 放弃词级时间戳。
 - **长音频与进度**：离线对超过 `vllm_offline_chunk_sec`（默认 180s）的音频按静音边界**逐块转写**，转写进度（0.1→0.85）随块实时更新、并可在块间响应取消（短音频整段直转）。块由 qwen_asr 同款切法产生、拼接=原音频；调小 `vllm_offline_chunk_sec` 可让进度更细、实时等待更短、峰值显存更省，但会降低离线吞吐。
-- **说话人分离/识别**：`--enable-speaker`（+ 声纹库 `--enable-speaker-db`）后，离线 `segments[].speaker` / `speaker_name` / `speakers` 字段与 standard 一致；实时在句级 `final` 输出 `speaker`，声纹命中时输出 `speaker_name`，`partial` 不带说话人且历史消息不回改。引擎为基于 torch 的 ReDimNet2-B6（standard 跟随服务设备，vLLM 使用 GPU），离线滑窗语音区间和实时断句都用能量检测替代 FSMN-VAD（边界较粗）。未开启时请求 `diarize`/`identify_speakers` 记入 `warnings`。权重文件 `b6-vb2+vox2+cnc2_v0-lm.pt` 必须由部署方放入 `models/speaker/redimnet2-b6/`，运行时只校验完整性、不自动下载；聚类依赖 `scipy`/`scikit-learn`，见 [requirements-vllm.txt](../asr-service/requirements-vllm.txt)。
+- **说话人分离/识别**：`--enable-speaker`（+ 声纹库 `--enable-speaker-db`）后，离线 `segments[].speaker` / `speaker_name` / `speakers` 字段与 standard 一致。实时链路不加载说话人处理，兼容保留的 `final.speaker` / `speaker_name` 固定为 `null`。引擎为基于 torch 的 ReDimNet2-B6（standard 跟随服务设备，vLLM 使用 GPU）；vLLM 离线滑窗语音区间用能量检测替代 FSMN-VAD（边界较粗）。权重文件 `b6-vb2+vox2+cnc2_v0-lm.pt` 必须由部署方放入 `models/speaker/redimnet2-b6/`，运行时只校验完整性、不自动下载；聚类依赖 `scipy`/`scikit-learn`，见 [requirements-vllm.txt](../asr-service/requirements-vllm.txt)。
 > 需要 FSMN 精分段或 CT-Transformer 独立标点控制时，请用 `standard` 模式。
 
 **兼容接口（`/compat/*`）**：vllm 模式同样支持 OpenAI / DashScope 兼容接口，开关与 standard 一致（`--enable-openai-api` / `--enable-dashscope-api`）；接口文档见 [开发文档](development.md)。与 standard 的差异：
 - **离线兼容**（OpenAI `audio/transcriptions`·`models`、DashScope 录音文件识别）复用 vLLM 离线 pipeline，故分段/标点/说话人质量同上节所述；`audio/translations` 维持 501（服务仅 ASR，与 standard 天然对齐）。
-- **实时兼容**（OpenAI `WS /realtime`、DashScope `WS …/inference`）随兼容开关一并挂载（vLLM 流式恒开，**无需** `--enable-stream`）；vLLM 的逐字 partial 增量已经兼容协议下发（`capabilities.compat.realtime_partial=true`）：DashScope 走中间 `result-generated`（`sentence_end=false`，与其累计语义天然契合），`diarization_enabled=true` 时句末 final 额外带整型 `speaker_id`；OpenAI 走 `…transcription.delta`，因 OpenAI 要增量片段而 vLLM partial 为累计且可修订，故为 **best-effort**（仅纯追加帧取新增后缀作 delta、修订帧跳过；权威全文始终以 `…completed` 为准），且 OpenAI 协议无说话人字段。
+- **实时兼容**（OpenAI `WS /realtime`、DashScope `WS …/inference`）随兼容开关一并挂载（vLLM 流式恒开，**无需** `--enable-stream`）；vLLM 的逐字 partial 增量已经兼容协议下发（`capabilities.compat.realtime_partial=true`）：DashScope 走中间 `result-generated`（`sentence_end=false`，与其累计语义天然契合），实时 `diarization_enabled` 会被忽略且结果不含 `speaker_id`；OpenAI 走 `…transcription.delta`，因 OpenAI 要增量片段而 vLLM partial 为累计且可修订，故为 **best-effort**（仅纯追加帧取新增后缀作 delta、修订帧跳过；权威全文始终以 `…completed` 为准），且 OpenAI 协议无说话人字段。
 - DashScope file_urls 服务端下载需 `httpx`（已含于 requirements-vllm），SSRF 守卫与 `--compat-fetch-*` 参数沿用 standard。
 - `/capabilities` 的 `compat` 段如实反映已挂端点：`{openai, dashscope, realtime, realtime_partial}`。
 

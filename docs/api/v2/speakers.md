@@ -22,17 +22,17 @@
 
 | 层 | 开关 | 产出 |
 |----|------|------|
-| **说话人分离**（匿名） | `enable_speaker` | 离线 `segments[].speaker` 与顶层 `speakers`、实时 `final.speaker`——标签 `A`/`B`/`C`… 按首次开口顺序，**作用域为单文件/单会话**（跨任务不保证同人同标签） |
+| **说话人分离**（匿名） | `enable_speaker` | 离线 `segments[].speaker` 与顶层 `speakers`——标签 `A`/`B`/`C`… 按首次开口顺序，**作用域为单文件**（跨任务不保证同人同标签） |
 | **声纹识别**（真名） | `enable_speaker_db`（依赖上一层 + 必须配置 `api_key`） | 请求级 `identify_speakers=true` 时比对共享 PostgreSQL/pgvector 声纹库：命中输出 `speaker_name`；`speaker_auto_enroll` 默认关闭，显式开启后离线未命中且语音足量（默认 ≥10s）的说话人才登记为「说话人_NN」 |
 
 要点：
 
 - **失败永远优雅降级**：分离/识别任一环节失败只丢标签/真名，转写结果不受影响。
-- **实时识别"以最新 final 为准"**：每个簇用默认 5 秒、50% 重叠的滑动有效语音窗口查询声纹库；连续两个窗口命中相同身份后才展示 `speaker_name`，连续语音下理论最早约 7.5 秒（实际受断句边界影响）；历史消息不回改，实时路径不自动登记。
+- **实时链路只转写文字**：不执行说话人分离或声纹识别；为兼容已有客户端，`final.speaker` 与 `final.speaker_name` 固定为 `null`。
 - `speakers[].speaker_id` 为**纯值快照**：与任务库无关联，说话人被删除后历史任务中的 id 悬空（`GET /v2/speakers/{id}` 返回 404 即"已删除"），调用方需容忍。
 - 自动登记的 consent 语义：开启 `speaker_auto_enroll` 即部署方声明已获得数据主体对声纹登记的同意（与手动登记 `consent=true` 同一责任归属）。
 
-转写如何携带 `identify_speakers`：离线见[转写 · 提交 ASR 任务](transcription.md#提交-asr-任务)，实时见[转写 · 客户端 → 服务端](transcription.md#客户端--服务端)；离线结果中的说话人字段见[任务管理 · 结果结构](tasks.md#结果结构)。
+离线转写如何携带 `identify_speakers` 见[转写 · 提交 ASR 任务](transcription.md#提交-asr-任务)；离线结果中的说话人字段见[任务管理 · 结果结构](tasks.md#结果结构)。
 
 带声纹识别的离线结果示例（`result` 增量部分）：
 

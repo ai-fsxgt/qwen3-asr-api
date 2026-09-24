@@ -59,6 +59,8 @@ class FinalMsg(BaseModel):
     start: int | None = None
     end: int | None = None
     words: list | None = None          # 仅 word_timestamps=true（路线 B 启用对齐）
+    speaker: None = None               # 兼容保留；实时链路固定返回 null
+    speaker_name: None = None          # 兼容保留；实时链路固定返回 null
 
 
 class ErrorMsg(BaseModel):

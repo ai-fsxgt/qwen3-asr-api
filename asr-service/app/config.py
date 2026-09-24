@@ -162,9 +162,9 @@ STREAM_SNR_MIN_DB = 6.0             # 自适应信噪比门（dB）：段相对�
 # ─── 说话人分离 ───
 
 ENABLE_SPEAKER = False          # 总开关（--enable-speaker，由 main.py argparse 覆盖）
-SPEAKER_THRESHOLD = 0.5         # 实时在线归簇余弦阈值；更换模型后需用实际数据重新标定
-SPEAKER_MAX = 8                 # 说话人数上限（实时硬上限；离线为谱聚类簇数搜索上界）
-SPEAKER_MIN_SEG_MS = 1500       # 短于此的段不建新簇/不更新质心
+SPEAKER_THRESHOLD = 0.5         # 兼容保留；实时链路不再使用
+SPEAKER_MAX = 8                 # 离线谱聚类簇数搜索上界
+SPEAKER_MIN_SEG_MS = 1500       # 兼容保留；实时链路不再使用
 SPEAKER_MAX_WINDOWS = 4000      # 离线滑窗数上限，超出均匀抽稀（谱聚类 N² 内存防护）
 
 # ─── 声纹库 ───

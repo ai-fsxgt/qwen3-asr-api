@@ -208,6 +208,8 @@ class VllmStreamSession:
             "text": text or "",
             "start": int(start_ms or 0),
             "end": int(end_ms),
+            "speaker": None,
+            "speaker_name": None,
         }
         self.seg_id += 1
         self._clear_ui_segment()

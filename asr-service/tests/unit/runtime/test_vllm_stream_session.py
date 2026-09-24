@@ -4,7 +4,6 @@ EnergyEndpointer 能量端点事件、VllmStreamSession 信封序列（mock 引�
 VllmStreamBackend 准入/释放/能力。在 standard venv 即可运行（模块不 import vllm）。
 """
 import asyncio
-import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -133,54 +132,6 @@ class _FinishFailureMockEngine(_MockEngine):
         raise ValueError("unexpected finish failure")
 
 
-class _FakeSpeakerEngine:
-    """按调用顺序返回正交 embedding，并记录实际收到的 PCM。"""
-
-    def __init__(self, vec_indices=None):
-        self.vec_indices = list(vec_indices or [])
-        self.calls = 0
-        self.realtime_calls = 0
-        self.audio_sizes = []
-
-    def embed_segment(self, audio):
-        self.audio_sizes.append(int(audio.size))
-        idx = self.vec_indices[self.calls] if self.calls < len(self.vec_indices) else 0
-        self.calls += 1
-        embedding = np.zeros(192, dtype=np.float32)
-        embedding[idx] = 1.0
-        return embedding
-
-    def embed_realtime_segment(self, audio):
-        self.realtime_calls += 1
-        return self.embed_segment(audio)
-
-    def embed_realtime_identity_segment(self, audio):
-        return self.embed_segment(audio)
-
-
-class _BoomSpeakerEngine:
-    def embed_realtime_segment(self, audio):
-        raise RuntimeError("speaker boom")
-
-
-class _FakeSpeakerService:
-    """按调用顺序返回名字；None 表示本次未命中。"""
-
-    def __init__(self, names=("张三",)):
-        self.names = list(names)
-        self.calls = 0
-
-    def map_clusters(self, clusters, *, id_threshold=None, id_margin=None):
-        index = min(self.calls, len(self.names) - 1)
-        name = self.names[index]
-        self.calls += 1
-        return [{
-            "label": clusters[0]["label"],
-            "speaker_id": "x" * 32 if name is not None else None,
-            "name": name,
-            "score": 0.8 if name is not None else None,
-        }]
-
 
 def _make_session(engine=None, **bk):
     eng = engine or _MockEngine()
@@ -217,74 +168,6 @@ def test_configure_chunk_size_override_and_range():
         sess.configure({"chunk_size_sec": 10})    # > 5.0 上限
 
 
-def test_configure_accepts_speaker_options_when_enabled():
-    backend, sess = _make_session(
-        speaker=_FakeSpeakerEngine(),
-        speaker_service=_FakeSpeakerService(),
-    )
-    try:
-        warnings = sess.configure({
-            "speaker_threshold": 0.6,
-            "speaker_min_seg_ms": 800,
-            "speaker_max": 5,
-            "speaker_id_threshold": 0.55,
-            "speaker_id_margin": 0.2,
-            "identify_speakers": True,
-        })
-        assert warnings == []
-        assert sess._spk_cluster is not None
-        assert sess._spk_threshold == 0.6
-        assert sess._spk_min_seg_ms == 800
-        assert sess._spk_max == 5
-        assert sess._identify is True
-    finally:
-        backend.shutdown()
-
-
-@pytest.mark.parametrize("options", [
-    {"speaker_threshold": 0.1},
-    {"speaker_min_seg_ms": 10001},
-    {"speaker_max": 0},
-    {"speaker_id_threshold": 1.1},
-    {"speaker_id_margin": -0.1},
-    {"diarize": "yes"},
-    {"identify_speakers": "yes"},
-])
-def test_configure_rejects_invalid_speaker_options(options):
-    backend, sess = _make_session(speaker=_FakeSpeakerEngine())
-    try:
-        with pytest.raises(ValueError):
-            sess.configure(options)
-    finally:
-        backend.shutdown()
-
-
-def test_configure_diarize_false_disables_cluster_without_warning():
-    backend, sess = _make_session(speaker=_FakeSpeakerEngine())
-    try:
-        assert sess.configure({"diarize": False}) == []
-        assert sess._spk_cluster is None
-        sess.configure({})
-        assert sess._spk_cluster is not None
-    finally:
-        backend.shutdown()
-
-
-def test_configure_identify_without_ready_service_warns():
-    backend, sess = _make_session(speaker=_FakeSpeakerEngine())
-    try:
-        warnings = sess.configure({
-            "identify_speakers": True,
-            "speaker_id_threshold": 0.5,
-        })
-        assert set(warnings) == {"identify_speakers", "speaker_id_threshold"}
-        messages = asyncio.run(_feed_sentence(sess))
-        final = next(msg for msg in messages if msg["type"] == "final")
-        assert final["speaker"] == "A"
-        assert sess._spk_cluster._identity_audio[0].size == 0
-    finally:
-        backend.shutdown()
-
 
 # ─── VllmStreamSession.feed_audio / flush ───
 
@@ -311,6 +194,8 @@ def test_feed_audio_partial_then_final():
     f = finals[0]
     assert f["seg_id"] == 0 and f["text"].endswith("。")
     assert f["start"] == 0 and f["end"] == 1400
+    assert f["speaker"] is None
+    assert f["speaker_name"] is None
     assert sess.state is None                     # 句尾已 reset
     assert eng.new_states == 1                    # 仅起了一句
 
@@ -620,273 +505,6 @@ def test_feed_audio_silence_only_no_segment():
     assert eng.new_states == 0 and eng.feeds == 0
 
 
-# ─── 实时说话人分离 / 声纹识别 ───
-
-def test_speaker_labels_different_and_same_speakers():
-    speaker = _FakeSpeakerEngine(vec_indices=[0, 1, 0])
-    backend, sess = _make_session(
-        _SilenceAwareMockEngine(), speaker=speaker, end_silence_ms=800)
-    sess.configure({})
-
-    async def run():
-        finals = []
-        for _ in range(3):
-            finals += [
-                msg for msg in await _feed_sentence(sess)
-                if msg["type"] == "final"
-            ]
-        return finals
-
-    try:
-        finals = asyncio.run(run())
-        assert [msg["speaker"] for msg in finals] == ["A", "B", "A"]
-    finally:
-        backend.shutdown()
-
-
-def test_speaker_short_segment_remains_unlabeled():
-    speaker = _FakeSpeakerEngine()
-    backend, sess = _make_session(
-        _SilenceAwareMockEngine(), speaker=speaker, end_silence_ms=800)
-    sess.configure({})
-    try:
-        messages = asyncio.run(_feed_sentence(sess, voice_ms=1000))
-        final = next(msg for msg in messages if msg["type"] == "final")
-        assert "speaker" not in final
-        assert sess._spk_cluster.centroids == []
-    finally:
-        backend.shutdown()
-
-
-def test_speaker_failure_does_not_drop_text_final():
-    backend, sess = _make_session(
-        _SilenceAwareMockEngine(),
-        speaker=_BoomSpeakerEngine(),
-        end_silence_ms=800,
-    )
-    sess.configure({})
-    try:
-        messages = asyncio.run(_feed_sentence(sess))
-        final = next(msg for msg in messages if msg["type"] == "final")
-        assert final["text"]
-        assert "speaker" not in final
-    finally:
-        backend.shutdown()
-
-
-def test_stale_generation_drops_final_before_cluster_mutation():
-    backend, sess = _make_session(
-        _SilenceAwareMockEngine(), speaker=_FakeSpeakerEngine())
-    sess.configure({})
-    old_generation = sess._generation
-    sess.close()
-
-    try:
-        result = asyncio.run(sess._annotate_final(
-            {"type": "final", "seg_id": 0, "text": "旧结果"},
-            (np.array([1.0, 0.0], dtype=np.float32), 2000),
-            old_generation,
-        ))
-        assert result is None
-    finally:
-        backend.shutdown()
-
-
-def test_diarize_false_skips_audio_buffer_and_embedding():
-    speaker = _FakeSpeakerEngine()
-    backend, sess = _make_session(
-        _SilenceAwareMockEngine(), speaker=speaker, end_silence_ms=800)
-    sess.configure({"diarize": False})
-    try:
-        messages = asyncio.run(_feed_sentence(sess))
-        final = next(msg for msg in messages if msg["type"] == "final")
-        assert "speaker" not in final
-        assert speaker.calls == 0
-        assert sess._segment_audio is None
-    finally:
-        backend.shutdown()
-
-
-def test_speaker_audio_trims_endpoint_tail_silence():
-    speaker = _FakeSpeakerEngine()
-    backend, sess = _make_session(
-        _SilenceAwareMockEngine(), speaker=speaker, end_silence_ms=800)
-    sess.configure({})
-    try:
-        asyncio.run(_feed_sentence(sess, voice_ms=2000, silence_ms=800))
-        assert speaker.audio_sizes == [2 * SR]
-        assert speaker.realtime_calls == 1
-    finally:
-        backend.shutdown()
-
-
-def test_hard_cut_keeps_exact_audio_snapshot():
-    speaker = _FakeSpeakerEngine()
-    backend, sess = _make_session(
-        _SilenceAwareMockEngine(),
-        speaker=speaker,
-        max_utterance_sec=1,
-        max_state_sec=300,
-        end_silence_ms=800,
-    )
-    sess.configure({"speaker_min_seg_ms": 0})
-
-    async def run():
-        messages = await _collect(sess.feed_audio(_voice(1000)))
-        assert len([msg for msg in messages if msg["type"] == "final"]) == 1
-        messages += await _collect(sess.feed_audio(_voice(200)))
-        messages += await _collect(sess.flush())
-        return [msg for msg in messages if msg["type"] == "final"]
-
-    try:
-        finals = asyncio.run(run())
-        assert len(finals) == 2
-        assert [msg["speaker"] for msg in finals] == ["A", "A"]
-        assert speaker.audio_sizes == [SR, int(0.2 * SR)]
-    finally:
-        backend.shutdown()
-
-
-def test_final_carries_speaker_name_after_duration_and_confirmation_gates():
-    speaker = _FakeSpeakerEngine()
-    service = _FakeSpeakerService()
-    backend, sess = _make_session(
-        _SilenceAwareMockEngine(),
-        speaker=speaker,
-        speaker_service=service,
-        end_silence_ms=800,
-    )
-    sess.configure({"identify_speakers": True})
-
-    async def run():
-        finals = []
-        for _ in range(6):
-            finals += [
-                msg for msg in await _feed_sentence(sess)
-                if msg["type"] == "final"
-            ]
-        return finals
-
-    try:
-        finals = asyncio.run(run())
-        assert all("speaker_name" not in msg for msg in finals[:4])
-        assert all(msg["speaker_name"] == "张三" for msg in finals[4:])
-        assert service.calls == 2
-    finally:
-        backend.shutdown()
-
-
-def test_unknown_speaker_can_match_after_centroid_stabilizes():
-    service = _FakeSpeakerService(names=(None, "张三", "张三"))
-    backend, sess = _make_session(
-        _SilenceAwareMockEngine(),
-        speaker=_FakeSpeakerEngine(),
-        speaker_service=service,
-        end_silence_ms=800,
-    )
-    sess.configure({"identify_speakers": True})
-
-    async def run():
-        finals = []
-        for _ in range(9):
-            finals.extend(
-                msg for msg in await _feed_sentence(sess)
-                if msg["type"] == "final"
-            )
-        return finals
-
-    try:
-        finals = asyncio.run(run())
-        assert all("speaker_name" not in msg for msg in finals[:6])
-        assert all(msg["speaker_name"] == "张三" for msg in finals[6:])
-    finally:
-        backend.shutdown()
-
-
-def test_shared_store_is_queried_and_two_unknowns_revoke_name():
-    service = _FakeSpeakerService(names=("张三", "张三", None, None))
-    backend, sess = _make_session(
-        _SilenceAwareMockEngine(),
-        speaker=_FakeSpeakerEngine(),
-        speaker_service=service,
-        end_silence_ms=800,
-    )
-    sess.configure({"identify_speakers": True})
-
-    async def run():
-        finals = []
-        for _ in range(12):
-            finals.extend(
-                msg for msg in await _feed_sentence(sess)
-                if msg["type"] == "final"
-            )
-        return finals
-
-    try:
-        finals = asyncio.run(run())
-        assert service.calls == 5
-        assert all("speaker_name" not in msg for msg in finals[:4])
-        assert all(msg["speaker_name"] == "张三" for msg in finals[4:8])
-        assert all("speaker_name" not in msg for msg in finals[8:])
-    finally:
-        backend.shutdown()
-
-
-def test_speaker_service_failure_keeps_anonymous_label():
-    class BrokenService:
-        def map_clusters(self, *args, **kwargs):
-            raise RuntimeError("store closed")
-
-    backend, sess = _make_session(
-        _SilenceAwareMockEngine(),
-        speaker=_FakeSpeakerEngine(),
-        speaker_service=BrokenService(),
-        end_silence_ms=800,
-    )
-    sess.configure({"identify_speakers": True})
-    try:
-        messages = asyncio.run(_feed_sentence(sess))
-        final = next(msg for msg in messages if msg["type"] == "final")
-        assert final["speaker"] == "A"
-        assert "speaker_name" not in final
-    finally:
-        backend.shutdown()
-
-
-def test_release_invalidates_inflight_speaker_result():
-    started = threading.Event()
-    proceed = threading.Event()
-
-    class BlockingSpeaker(_FakeSpeakerEngine):
-        def embed_segment(self, audio):
-            started.set()
-            assert proceed.wait(timeout=2)
-            return super().embed_segment(audio)
-
-    backend, sess = _make_session(
-        _SilenceAwareMockEngine(),
-        speaker=BlockingSpeaker(),
-        end_silence_ms=800,
-    )
-    sess.configure({})
-
-    async def run():
-        await _collect(sess.feed_audio(_voice(2000)))
-        task = asyncio.create_task(_collect(sess.feed_audio(_silence(800))))
-        assert await asyncio.to_thread(started.wait, 2)
-        backend.release(sess)
-        proceed.set()
-        return await task
-
-    try:
-        assert asyncio.run(run()) == []
-        assert sess._spk_cluster is None
-        assert sess.state is None
-    finally:
-        proceed.set()
-        backend.shutdown()
-
-
 # ─── VllmStreamBackend ───
 
 def test_backend_capabilities():
@@ -895,26 +513,9 @@ def test_backend_capabilities():
     assert backend.capabilities["partial_results"] is True
     assert backend.capabilities["word_timestamps"] is False
     assert backend.capabilities["speaker_labels"] is False
+    assert backend.capabilities["speaker_identification"] is False
+    assert backend.capabilities["speaker_tunable"] is False
 
-
-def test_backend_speaker_capabilities_and_release_cleanup():
-    speaker = _FakeSpeakerEngine()
-    service = _FakeSpeakerService()
-    backend = VllmStreamBackend(
-        _MockEngine(), speaker=speaker, speaker_service=service)
-    assert backend.capabilities["speaker_labels"] is True
-    assert backend.capabilities["speaker_identification"] is True
-    assert backend.capabilities["speaker_tunable"] is True
-
-    session = backend.create_session("speaker-session")
-    session.configure({})
-    session._begin_ui_segment(0)
-    assert session._spk_cluster is not None
-    assert session._segment_audio is not None
-    backend.release(session)
-    assert session._spk_cluster is None
-    assert session._segment_audio is None
-    backend.shutdown()
 
 
 def test_backend_acquire_release_limits():

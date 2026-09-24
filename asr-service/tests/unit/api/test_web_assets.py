@@ -85,14 +85,15 @@ def test_offline_js_uses_v2_endpoints():
 
 
 def test_stream_js_protocol_markers():
-    # 实时页协议关键标记：WS 端点、capabilities 探测、外置 worklet 加载
+    # 实时页协议关键标记：WS 端点、capabilities 探测、外置 worklet、隐藏说话人能力
     with open(os.path.join(ASSETS_DIR, "stream.js"), encoding="utf-8") as f:
         src = f.read()
     assert "/v2/asr/stream" in src
     assert "/v2/capabilities" in src
     assert "/web-ui/assets/pcm-worklet.js" in src
-    assert "stream.speaker_labels" in src
-    assert "stream.speaker_identification" in src
+    assert "CAP_HIDDEN" in src
+    assert "speaker_labels" in src
+    assert "speaker_identification" in src
 
 
 def test_speakers_js_management_markers():
@@ -103,4 +104,4 @@ def test_speakers_js_management_markers():
     assert "authHeaders" in src
     assert "PATCH" in src and "DELETE" in src
     assert "model_tag_mismatch" in src          # 降级指引分支
-    assert "硬删除不可恢复" in src               # 删除二次确认文案
+    assert "删除后无法通过接口恢复" in src         # 删除二次确认文案

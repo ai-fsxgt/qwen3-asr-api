@@ -1,10 +1,9 @@
 """app/engines/speaker_embedding_engine.py 单元测试（mock 模型 forward，不加载真权重）。
 
 覆盖：make_windows 边界、共享推理锁、embed_windows 批切分与 L2 归一、
-embed_segment 均值重归一化、实时任务在 batch 边界优先。精度类断言不在此。
+离线任务等待实时转写及取消。精度类断言不在此。
 """
 import threading
-import time
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -112,13 +111,6 @@ def test_embed_windows_short_clip_circle_padded():
     assert feats.shape[0] == 2
 
 
-def test_embed_segment_mean_renormalized():
-    eng, _ = _engine_with_mock()
-    wav = np.random.default_rng(2).normal(size=16000 * 3).astype(np.float32)  # 3s → 3 窗
-    emb = eng.embed_segment(wav)
-    assert emb.shape == (192,)
-    assert np.isclose(np.linalg.norm(emb), 1.0, atol=1e-5)
-
 
 def test_priority_gate_preserves_embedding_values():
     def fake_model(waveforms):
@@ -136,54 +128,6 @@ def test_priority_gate_preserves_embedding_values():
 
     assert np.array_equal(actual, expected)
 
-
-def test_realtime_embedding_preempts_offline_at_batch_boundary():
-    gate = RealtimePriorityGate()
-    eng = SpeakerEmbeddingEngine(priority_gate=gate)
-    first_offline_started = threading.Event()
-    release_first_batch = threading.Event()
-    order = []
-    errors = []
-
-    def fake_model(waveforms):
-        kind = "realtime" if float(waveforms[0, 0]) > 0.5 else "offline"
-        order.append(kind)
-        if kind == "offline" and not first_offline_started.is_set():
-            first_offline_started.set()
-            assert release_first_batch.wait(timeout=2)
-        return torch.ones(waveforms.shape[0], 192)
-
-    eng._model = fake_model
-    offline_wav = np.zeros(16000, dtype=np.float32)
-    realtime_wav = np.ones(16000, dtype=np.float32)
-    offline_windows = [(0.0, 1.0)] * 12       # 4 + 4 + 4，共三个 batch
-
-    def run(fn, *args):
-        try:
-            fn(*args)
-        except Exception as exc:
-            errors.append(exc)
-
-    offline = threading.Thread(
-        target=run, args=(eng.embed_windows, offline_wav, offline_windows))
-    realtime = threading.Thread(
-        target=run, args=(eng.embed_realtime_segment, realtime_wav))
-    offline.start()
-    assert first_offline_started.wait(timeout=2)
-    realtime.start()
-
-    deadline = time.monotonic() + 2
-    while gate.realtime_active == 0 and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert gate.realtime_active == 1
-
-    release_first_batch.set()
-    offline.join(timeout=2)
-    realtime.join(timeout=2)
-
-    assert not offline.is_alive() and not realtime.is_alive()
-    assert errors == []
-    assert order == ["offline", "realtime", "offline", "offline"]
 
 
 def test_offline_embedding_stops_when_cancelled_while_waiting(monkeypatch):
