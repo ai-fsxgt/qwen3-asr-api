@@ -274,6 +274,7 @@ def final_to_dashscope_result(final: dict, task_id: str) -> dict:
         "end_time": final.get("end"),
         "text": final.get("text", ""),
         "sentence_end": True,
+        "speaker_id": None,
     }
     words = _realtime_words_ms(final)
     if words:

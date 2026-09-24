@@ -54,7 +54,6 @@ Configure both services with:
 enable_speaker: true
 enable_speaker_db: true
 speaker_identify_min_sec: 5.0
-speaker_realtime_confirmations: 2
 speaker_id_threshold: 0.45
 speaker_id_margin: 0.10
 speaker_auto_enroll: false

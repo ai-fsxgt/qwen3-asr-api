@@ -13,6 +13,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASR_ROOT="$(cd "$HERE/../.." && pwd)"
 VENV="$HERE/.venv"
 PYBIN="$VENV/bin/python"
+REQUIREMENTS="$HERE/requirements.txt"
+REQUIREMENTS_MARKER="$VENV/.requirements.sha256"
 PORT="${E2E_PORT:-8799}"
 
 # 是否用户自带 --base-url（自带则不起 mock）
@@ -23,15 +25,19 @@ for arg in "$@"; do
   esac
 done
 
-# 1. 建 venv + 装依赖（幂等：依赖完整时跳过）
+# 1. 建 venv + 装依赖（依赖文件变化或环境不完整时重装）
 if [ ! -x "$PYBIN" ]; then
   echo "[e2e] 创建独立 venv: $VENV"
   python3 -m venv "$VENV"
 fi
-if ! "$PYBIN" -c "import fastapi, openai, dashscope" 2>/dev/null; then
+REQUIREMENTS_HASH="$("$PYBIN" -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$REQUIREMENTS")"
+INSTALLED_HASH="$(cat "$REQUIREMENTS_MARKER" 2>/dev/null || true)"
+if [ "$REQUIREMENTS_HASH" != "$INSTALLED_HASH" ] || \
+   ! "$PYBIN" -c "import dashscope, fastapi, httpx, multipart, numpy, openai, pydantic, soundfile, uvicorn, websockets" 2>/dev/null; then
   "$PYBIN" -m pip install -q --upgrade pip
   echo "[e2e] 安装依赖 (scripts/e2e/requirements.txt) ..."
-  "$PYBIN" -m pip install -q -r "$HERE/requirements.txt"
+  "$PYBIN" -m pip install -q -r "$REQUIREMENTS"
+  printf '%s\n' "$REQUIREMENTS_HASH" > "$REQUIREMENTS_MARKER"
 fi
 
 SRV_PID=""

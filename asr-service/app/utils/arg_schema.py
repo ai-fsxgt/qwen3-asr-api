@@ -443,9 +443,8 @@ ARG_SPECS = (
         flags=("--speaker-realtime-confirmations",), default=2, type=int,
         min_value=1,
         group="声纹库",
-        help="实时连续多少个滑动窗口命中同一身份后展示姓名 (default: 2)",
-        help_en="Sliding realtime windows that must consecutively match the "
-                "same identity before exposing a name (default: 2)",
+        help="兼容保留参数；实时链路不再使用 (default: 2)",
+        help_en="Compatibility-only option; no longer used by realtime (default: 2)",
     ),
     ArgSpec(
         key="speaker_enroll_min_sec", flags=("--speaker-enroll-min-sec",), default=3.0, type=float,

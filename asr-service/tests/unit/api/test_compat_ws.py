@@ -252,7 +252,7 @@ def test_dashscope_ignores_realtime_diarization_option(ws_app, enabled):
         assert "diarize" not in session.configured[-1]
 
 
-def test_dashscope_final_omits_speaker_id(ws_app):
+def test_dashscope_final_keeps_empty_speaker_id(ws_app):
     backend = FakeBackend(session_factory=lambda: FakeSession(
         flush_finals=[dict(FINAL, speaker="B")]))
     client = ws_app(backend)
@@ -264,7 +264,7 @@ def test_dashscope_final_omits_speaker_id(ws_app):
         assert ws.receive_json()["header"]["event"] == "task-started"
         ws.send_json({"header": {"action": "finish-task"}})
         result = ws.receive_json()
-        assert "speaker_id" not in result["payload"]["output"]["sentence"]
+        assert result["payload"]["output"]["sentence"]["speaker_id"] is None
         assert ws.receive_json()["header"]["event"] == "task-finished"
 
 

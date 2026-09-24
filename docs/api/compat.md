@@ -59,7 +59,7 @@
 
 > 实时（上表最后两行）的挂载与增量能力因模式而异：**standard**（VAD-offline）需 `--enable-stream`，仅产整句 final、无逐字增量；**vLLM**（`--serve-mode vllm`，原生流式）流式恒开、实时随兼容开关自动挂载（**无需 `--enable-stream`**），并产逐字增量——DashScope 中间 `result-generated`（`sentence_end:false`）天然累计、干净直发；OpenAI `…delta` 为 **best-effort**（partial 累计且可修订，仅纯追加时取新增后缀作 delta、修订帧跳过，权威全文仍以 `…completed` 为准）。
 >
-> DashScope 实时会接受但忽略 `diarization_enabled`，所有实时结果都不带 `speaker_id`。OpenAI Realtime 没有对应说话人字段。
+> DashScope 实时会接受但忽略 `diarization_enabled`；中间结果不带 `speaker_id`，句末结果为兼容已有客户端固定返回 `speaker_id: null`。OpenAI Realtime 没有对应说话人字段。
 
 ## 与原生 v2 的取舍
 

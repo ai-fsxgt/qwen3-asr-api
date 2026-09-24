@@ -136,7 +136,7 @@ volumes:
 | `--speaker-id-threshold` | 0–1 | `0.45` | 1:N 开集识别阈，最高相似度低于此判 unknown |
 | `--speaker-id-margin` | 0–1 | `0.10` | top1-top2 margin，差距小于此判 unknown（近邻打架宁缺勿错） |
 | `--speaker-identify-min-sec` | 秒 | `5.0` | 每个滑动识别窗口所需的有效语音时长；相邻窗口默认 50% 重叠 |
-| `--speaker-realtime-confirmations` | 数字 | `2` | 连续滑动窗口命中相同身份达到该次数后才展示姓名 |
+| `--speaker-realtime-confirmations` | 数字 | `2` | 兼容保留参数；实时链路不再使用 |
 | `--speaker-enroll-min-sec` | 秒 | `3.0` | 手动登记单样本最短有效语音（VAD 后） |
 | `--speaker-auto-enroll` / `--no-speaker-auto-enroll` | - | 关闭 | 离线识别未命中的说话人自动以「说话人_NN」登记（**开启 = 部署方声明已获数据主体同意**） |
 | `--speaker-auto-enroll-min-sec` | 秒 | `10.0` | 自动登记的簇最短语音总时长（严于手动登记，降低噪声建档） |
@@ -311,7 +311,7 @@ export SPEAKER_DATABASE_URL='postgresql://qwen3_asr:强密码@数据库IP:5432/q
 
 **兼容接口（`/compat/*`）**：vllm 模式同样支持 OpenAI / DashScope 兼容接口，开关与 standard 一致（`--enable-openai-api` / `--enable-dashscope-api`）；接口文档见 [开发文档](development.md)。与 standard 的差异：
 - **离线兼容**（OpenAI `audio/transcriptions`·`models`、DashScope 录音文件识别）复用 vLLM 离线 pipeline，故分段/标点/说话人质量同上节所述；`audio/translations` 维持 501（服务仅 ASR，与 standard 天然对齐）。
-- **实时兼容**（OpenAI `WS /realtime`、DashScope `WS …/inference`）随兼容开关一并挂载（vLLM 流式恒开，**无需** `--enable-stream`）；vLLM 的逐字 partial 增量已经兼容协议下发（`capabilities.compat.realtime_partial=true`）：DashScope 走中间 `result-generated`（`sentence_end=false`，与其累计语义天然契合），实时 `diarization_enabled` 会被忽略且结果不含 `speaker_id`；OpenAI 走 `…transcription.delta`，因 OpenAI 要增量片段而 vLLM partial 为累计且可修订，故为 **best-effort**（仅纯追加帧取新增后缀作 delta、修订帧跳过；权威全文始终以 `…completed` 为准），且 OpenAI 协议无说话人字段。
+- **实时兼容**（OpenAI `WS /realtime`、DashScope `WS …/inference`）随兼容开关一并挂载（vLLM 流式恒开，**无需** `--enable-stream`）；vLLM 的逐字 partial 增量已经兼容协议下发（`capabilities.compat.realtime_partial=true`）：DashScope 走中间 `result-generated`（`sentence_end=false`，与其累计语义天然契合），实时 `diarization_enabled` 会被忽略，句末结果固定返回 `speaker_id:null`；OpenAI 走 `…transcription.delta`，因 OpenAI 要增量片段而 vLLM partial 为累计且可修订，故为 **best-effort**（仅纯追加帧取新增后缀作 delta、修订帧跳过；权威全文始终以 `…completed` 为准），且 OpenAI 协议无说话人字段。
 - DashScope file_urls 服务端下载需 `httpx`（已含于 requirements-vllm），SSRF 守卫与 `--compat-fetch-*` 参数沿用 standard。
 - `/capabilities` 的 `compat` 段如实反映已挂端点：`{openai, dashscope, realtime, realtime_partial}`。
 

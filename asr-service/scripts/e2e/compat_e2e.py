@@ -322,6 +322,9 @@ async def _dashscope_realtime(args, pcm, sr):
             if ev == "result-generated":
                 sent = msg["payload"]["output"]["sentence"]
                 assert sent.get("sentence_end") is True, "非整句结果"
+                assert "speaker_id" in sent and sent["speaker_id"] is None, (
+                    "实时句末结果必须保留空 speaker_id"
+                )
                 sentences.append(sent["text"])
             elif ev == "task-finished":
                 break

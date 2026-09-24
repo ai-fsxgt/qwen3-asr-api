@@ -73,9 +73,9 @@ def test_dashscope_result_no_words():
     assert "words" not in ev["payload"]["output"]["sentence"]
 
 
-def test_dashscope_result_ignores_legacy_speaker_value():
+def test_dashscope_result_keeps_empty_speaker_id():
     ev = final_to_dashscope_result(dict(FINAL, speaker="B"), "t")
-    assert "speaker_id" not in ev["payload"]["output"]["sentence"]
+    assert ev["payload"]["output"]["sentence"]["speaker_id"] is None
 
 
 # ─── R2 增量映射（partial）───

@@ -91,13 +91,13 @@ Paraformer realtime (standard mode needs `--enable-stream`; under vLLM mode `--s
 1. Client → `run-task`: `{"header":{"action":"run-task","task_id":"<uuid>","streaming":"duplex"},"payload":{"parameters":{"format":"pcm","sample_rate":16000,"language_hints":["zh"]}}}`
 2. Server → `task-started`
 3. Client → binary PCM frames (~100ms each)
-4. Server → per sentence `result-generated`: `payload.output.sentence` with `begin_time`/`end_time`(ms)/`text`/`sentence_end:true`/`words[]`; no `speaker_id` is emitted
+4. Server → per sentence `result-generated`: `payload.output.sentence` with `begin_time`/`end_time`(ms)/`text`/`sentence_end:true`/`words[]`, plus `speaker_id:null` for existing clients
 5. Client → `finish-task` → Server → `task-finished`
 6. The same connection can issue another `run-task` (connection reuse)
 
 > For existing clients, the server still accepts realtime `run-task.payload.parameters.diarization_enabled`, but ignores it.
 >
-> **Capabilities & limits**: depends on the serving mode — **standard** (VAD-offline) emits only whole sentences `result-generated` (`sentence_end:true`), no intermediate results (`sentence_end:false`); **vLLM** (`--serve-mode vllm`, native streaming) streams intermediate `result-generated` within a sentence (`sentence_end:false`, cumulative text, `begin_time`/`end_time`=null, no `words` or `speaker_id`), then a final `sentence_end:true`. Neither mode exposes `speaker_id` in realtime results. DashScope's intermediate-result semantics are inherently cumulative and align naturally with vLLM partials — forwarded cleanly (not best-effort).
+> **Capabilities & limits**: depends on the serving mode — **standard** (VAD-offline) emits only whole sentences `result-generated` (`sentence_end:true`), no intermediate results (`sentence_end:false`); **vLLM** (`--serve-mode vllm`, native streaming) streams intermediate `result-generated` within a sentence (`sentence_end:false`, cumulative text, `begin_time`/`end_time`=null, no `words` or `speaker_id`), then a final `sentence_end:true`. Sentence-final results in both modes always contain `speaker_id:null`; no realtime speaker processing is performed. DashScope's intermediate-result semantics are inherently cumulative and align naturally with vLLM partials — forwarded cleanly (not best-effort).
 
 ---
 

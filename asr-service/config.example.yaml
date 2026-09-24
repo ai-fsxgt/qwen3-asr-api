@@ -75,7 +75,7 @@ speaker_id_margin: 0.08         # top1-top2 margin（近邻打架判 unknown，�
 speaker_identify_min_sec: 5.0   # 每个滑动识别窗口的有效语音（秒）
 speaker_enroll_min_sec: 3.0     # 手动登记单样本最短有效语音（VAD 后，秒）
 speaker_auto_enroll_min_sec: 10.0  # 自动登记的簇最短语音总时长（秒）
-speaker_realtime_confirmations: 2 # 连续 2 个滑动窗口命中同一身份后展示姓名
+speaker_realtime_confirmations: 2 # 兼容保留；实时链路不再使用
 speaker_store_audio: false      # 留存登记样本音频（扩大合规面）
 speaker_auto_enroll: false       # 离线识别未命中簇自动以「说话人_NN」登记（开启=部署方声明已获数据主体同意）
 
