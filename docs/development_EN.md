@@ -139,15 +139,13 @@ venv/bin/python -m app.main --web --enable-stream \
 
 ## 8. Release & image build
 
-Image publishing is automated via GitHub Actions: pushing a `vX.Y.Z` git tag triggers `.github/workflows/docker-publish.yml`, which builds and pushes the vLLM image to GitHub Container Registry (GHCR), then the `sync-aliyun` job copies it as-is to Alibaba Cloud Container Registry.
+Image publishing is automated via GitHub Actions: pushing a `vX.Y.Z` git tag triggers `.github/workflows/docker-publish.yml`, which builds and pushes the vLLM image to GitHub Container Registry (GHCR).
 
 ```bash
 git tag v2.0.1
 git push origin v2.0.1
 # → ghcr.io/ai-fsxgt/qwen3-asr-service:2.0.1-vllm
 # → ghcr.io/ai-fsxgt/qwen3-asr-service:latest-vllm
-# → registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:2.0.1-vllm
-# → registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm
 ```
 
 | Deployment | Dockerfile | Platform | Tags produced |
@@ -155,5 +153,4 @@ git push origin v2.0.1
 | vLLM | `docker/Dockerfile.vllm` | linux/amd64 | `X.Y.Z-vllm` + `latest-vllm` |
 
 - **Version injection**: the tag's version (with the `v` prefix stripped) is passed via `--build-arg APP_VERSION` into the image; `main.py` reads it through `os.environ.get("APP_VERSION")`, surfacing as `info.version` in FastAPI `/openapi.json`. Falls back to `dev` (local manual build) / `2.0.0` (running source directly) when unset.
-- **First-release prerequisite**: configure `ALIYUN_REGISTRY_USERNAME` and `ALIYUN_REGISTRY_PASSWORD` (Alibaba Cloud Container Registry username and password/access credential) under repo **Settings → Secrets and variables → Actions**, otherwise the Aliyun sync step fails; pushing to GHCR uses the built-in `GITHUB_TOKEN` and needs no extra setup. If the sync fails, re-run only `sync-aliyun` from the Actions page without rebuilding.
 - **Local manual build**: use `bash docker/build.sh` to build the vLLM image with `APP_VERSION` injection. Runtime verification requires a local NVIDIA GPU host.

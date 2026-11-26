@@ -4,7 +4,7 @@ set -e
 # 构建上下文必须是仓库根目录。
 cd "$(dirname "$0")/.."
 
-IMAGE_NAME="registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service"
+IMAGE_NAME="ghcr.io/ai-fsxgt/qwen3-asr-service"
 VLLM_TAG="${VLLM_TAG:-v0.14.0}"
 
 read -rp "请输入版本号（回车默认 latest）: " input_ver

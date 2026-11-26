@@ -57,7 +57,7 @@ Docker 方式：
 docker run -d --gpus all -p 8765:8765 \
   -v ./asr-service/models:/app/models \
   --name qwen3-asr-service \
-  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm --web
+  ghcr.io/ai-fsxgt/qwen3-asr-service:latest-vllm --web
 ```
 
 > Docker 仅提供 vLLM GPU 镜像；本地 CPU 模式、docker-compose、局域网访问和 API 认证等见[部署指南](docs/deployment.md)。
