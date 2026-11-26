@@ -343,10 +343,10 @@ docker compose -f docker/docker-compose.yml up -d
 
 | 配置 | 默认值 | 说明 |
 |------|--------|------|
-| MAX_AUDIO_DURATION | 14400s | 最大音频时长（4 小时） |
+| MAX_AUDIO_DURATION | 28800s | 最大音频时长（8 小时） |
 | MAX_AUDIO_FILE_SIZE | 1024MB | 最大上传文件大小 |
 | MIN_AUDIO_DURATION | 1.0s | 最短音频时长 |
-| TASK_TIMEOUT | 1800s | 单任务超时（30 分钟） |
+| TASK_TIMEOUT | 3600s | 单任务超时（60 分钟） |
 | TASK_RESULT_TTL | 3600s | 内存中终态任务保留时长（持久化历史不受此限） |
 | STREAM_MAX_FRAME_BYTES | 2MB | 实时单条二进制帧上限 |
 | STREAM_MAX_BACKLOG_BYTES | 8MB | 实时处理积压上限（超限断开） |

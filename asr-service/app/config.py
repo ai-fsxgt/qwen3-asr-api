@@ -89,7 +89,7 @@ MAX_ASR_CHUNK_DURATION = 20     # 单个「连续语音段」强制二次切分�
                                # 连续语音超过此值才切。过小（如 5s）会把连续语句切在词中间，
                                # 导致边界词被两侧各识别一次（重复）或漏字；Qwen3-ASR 可稳定处理
                                # 远长于此的音频。需要切分时在最安静处（停顿）下刀，见 asr_pipeline。
-MAX_AUDIO_DURATION = 14400      # 最大音频时长 4 小时（秒）
+MAX_AUDIO_DURATION = 28800      # 最大音频时长 8 小时（秒）
 MAX_AUDIO_FILE_SIZE = 1024      # 最大文件大小（MB）
 MIN_AUDIO_DURATION = 1.0        # 最短音频时长（秒）
 
@@ -114,7 +114,7 @@ LOG_FILE = os.path.join(LOG_DIR, "asr.log")
 # ─── 任务队列 ───
 
 MAX_QUEUE_SIZE = 100
-TASK_TIMEOUT = 1800             # 单任务超时 30 分钟（秒）
+TASK_TIMEOUT = 3600             # 单任务超时 60 分钟（秒）
 TASK_RESULT_TTL = 3600          # 已完成任务保留时长（秒），默认 1 小时
 TASK_CLEANUP_INTERVAL = 300     # 清理扫描间隔（秒），默认 5 分钟
 
