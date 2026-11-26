@@ -24,6 +24,8 @@ Use Python 3.12 and follow PEP 8 with 4-space indentation. Always use the reposi
 
 Unit tests use pytest, pytest-asyncio, pytest-mock, and pytest-cov. Avoid real models, network calls, and long waits in unit tests; use mocks, monkeypatching, and dependency injection. Route tests should use fixtures from `tests/conftest.py`. For public API or WebSocket changes, run focused unit tests plus the E2E smoke script against a mock or real service.
 
+Do not run the full test suite by default. After a change, run only the test files that cover the changed code (for example `PYTHONPATH=asr-service .venv/bin/python -m pytest asr-service/tests/unit/runtime/test_task_manager.py -q`), and skip tests for docs-only changes. Run the full suite only when the user explicitly asks for it.
+
 ## Commit & Pull Request Guidelines
 
 Git history follows Conventional Commits, for example `fix(pipeline): ...`, `docs(readme): ...`, and `test(api): ...`. Use concise subjects and include Chinese detail when helpful. Pull requests should describe the change, list verification commands, link related issues, and include screenshots for Web UI changes. Update `docs/api` and doc-center registration when public contracts change.

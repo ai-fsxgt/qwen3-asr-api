@@ -343,10 +343,10 @@ Built-in limits not exposed as startup parameters / config-file keys (edit `app/
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| MAX_AUDIO_DURATION | 14400s | Max audio duration (4 hours) |
+| MAX_AUDIO_DURATION | 28800s | Max audio duration (8 hours) |
 | MAX_AUDIO_FILE_SIZE | 1024MB | Max upload file size |
 | MIN_AUDIO_DURATION | 1.0s | Min audio duration |
-| TASK_TIMEOUT | 1800s | Per-task timeout (30 minutes) |
+| TASK_TIMEOUT | 3600s | Per-task timeout (60 minutes) |
 | TASK_RESULT_TTL | 3600s | In-memory retention of terminal tasks (persisted history is unaffected) |
 | STREAM_MAX_FRAME_BYTES | 2MB | Max binary frame size (real-time) |
 | STREAM_MAX_BACKLOG_BYTES | 8MB | Max processing backlog (real-time, disconnects when exceeded) |
