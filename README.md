@@ -59,7 +59,7 @@ With Docker:
 docker run -d --gpus all -p 8765:8765 \
   -v ./asr-service/models:/app/models \
   --name qwen3-asr-service \
-  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm --web
+  ghcr.io/ai-fsxgt/qwen3-asr-service:latest-vllm --web
 ```
 
 > Docker provides the vLLM GPU image only. See the [deployment guide](docs/deployment_EN.md) for local CPU mode, docker-compose, LAN access, and API authentication.

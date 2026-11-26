@@ -139,15 +139,13 @@ venv/bin/python -m app.main --web --enable-stream \
 
 ## 8. 发布与镜像构建
 
-镜像发布由 GitHub Actions 自动完成：推送 `vX.Y.Z` 形式的 git tag 即触发 `.github/workflows/docker-publish.yml`，先构建 vLLM 镜像推送到 GitHub 容器镜像服务（GHCR），再由 `sync-aliyun` job 原样同步到阿里云容器镜像服务。
+镜像发布由 GitHub Actions 自动完成：推送 `vX.Y.Z` 形式的 git tag 即触发 `.github/workflows/docker-publish.yml`，构建 vLLM 镜像并推送到 GitHub 容器镜像服务（GHCR）。
 
 ```bash
 git tag v2.0.1
 git push origin v2.0.1
 # → ghcr.io/ai-fsxgt/qwen3-asr-service:2.0.1-vllm
 # → ghcr.io/ai-fsxgt/qwen3-asr-service:latest-vllm
-# → registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:2.0.1-vllm
-# → registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm
 ```
 
 | 部署 | Dockerfile | 平台 | 产出 tag |
@@ -155,5 +153,4 @@ git push origin v2.0.1
 | vLLM | `docker/Dockerfile.vllm` | linux/amd64 | `X.Y.Z-vllm` + `latest-vllm` |
 
 - **版本号注入**：tag 的版本号（去掉 `v` 前缀）经 `--build-arg APP_VERSION` 写入镜像，`main.py` 通过 `os.environ.get("APP_VERSION")` 读取，体现在 FastAPI `/openapi.json` 的 `info.version`。未注入时回退 `dev`（本地手工构建）/ `2.0.0`（源码直跑）。
-- **首次发版前置**：需在仓库 **Settings → Secrets and variables → Actions** 配置 `ALIYUN_REGISTRY_USERNAME` 与 `ALIYUN_REGISTRY_PASSWORD`（阿里云容器镜像服务登录账号与密码/访问凭证），否则同步阿里云步骤失败；推送 GHCR 使用内置 `GITHUB_TOKEN`，无需额外配置。同步失败时可在 Actions 页面单独重跑 `sync-aliyun`，无需重新构建。
 - **本地手工构建**：使用 `bash docker/build.sh` 构建 vLLM 镜像（已同步注入 `APP_VERSION`）；运行验证需本地有 NVIDIA GPU。

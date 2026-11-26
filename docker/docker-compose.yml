@@ -1,6 +1,6 @@
 services:
   asr-vllm:
-    image: ${ASR_VLLM_IMAGE:-registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm}
+    image: ${ASR_VLLM_IMAGE:-ghcr.io/ai-fsxgt/qwen3-asr-service:latest-vllm}
     container_name: qwen3-asr-vllm
     ports:
       - "${ASR_PORT:-8765}:8765"

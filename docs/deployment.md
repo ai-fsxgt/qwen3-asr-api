@@ -115,7 +115,7 @@ bash start.sh
 
 ```bash
 # 拉取 vLLM 镜像
-docker pull registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm
+docker pull ghcr.io/ai-fsxgt/qwen3-asr-service:latest-vllm
 
 # 启动容器（vLLM，GPU 专用）
 docker run -d --gpus all \
@@ -124,7 +124,7 @@ docker run -d --gpus all \
   -v ./asr-service/logs:/app/logs \
   -v ./asr-service/data:/app/data \
   --name qwen3-asr-service \
-  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm \
+  ghcr.io/ai-fsxgt/qwen3-asr-service:latest-vllm \
   --model-size 0.6b --web
 ```
 

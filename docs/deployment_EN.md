@@ -115,7 +115,7 @@ Client usage: see [API reference · Authentication](api/v2/basics_EN.md#authenti
 
 ```bash
 # Pull the vLLM image
-docker pull registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm
+docker pull ghcr.io/ai-fsxgt/qwen3-asr-service:latest-vllm
 
 # Start the container (vLLM, GPU only)
 docker run -d --gpus all \
@@ -124,7 +124,7 @@ docker run -d --gpus all \
   -v ./asr-service/logs:/app/logs \
   -v ./asr-service/data:/app/data \
   --name qwen3-asr-service \
-  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm \
+  ghcr.io/ai-fsxgt/qwen3-asr-service:latest-vllm \
   --model-size 0.6b --web
 ```
 
